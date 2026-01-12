@@ -665,10 +665,10 @@
         <div class="sidebar">
             <div class="sidebar-header">
                 <div class="logo">
-                    <div class="logo-icon">
-                        <i class="fas fa-shield-alt"></i>
-                    </div>
-                    <span class="logo-text">CTBA Platform</span>
+                    <!-- Logo TDS by Nomios -->
+                    <img src="tds_by_nomios.png" alt="Tds_by_nomios" 
+                         style="height: 32px; width: auto; border-radius: 4px;">
+                    <span class="logo-text" style="margin-left: 12px;">CTBA Platform</span>
                 </div>
             </div>
             
@@ -710,8 +710,15 @@
             <!-- Top Bar -->
             <div class="top-bar">
                 <div class="page-title">
-                    <h1>🛡️ CTBA Platform Dashboard</h1>
-                    <p>📋 CVEs • 🔧 Technologies • 📊 Statistics</p>
+                    <div style="display: flex; align-items: center; gap: 16px;">
+                        <!-- Petit logo TDS by Nomios -->
+                        <img src="tds_by_nomios.png" alt="TDS" 
+                             style="height: 24px; width: auto; opacity: 0.7; border-radius: 3px;">
+                        <div>
+                            <h1>🛡️ CTBA Platform Dashboard</h1>
+                            <p>📋 CVEs • 🔧 Technologies • 📊 Statistics • Powered by TDS by Nomios</p>
+                        </div>
+                    </div>
                 </div>
                 <div class="user-actions">
                     <div class="search-box">
@@ -1357,10 +1364,10 @@
                             </span>
                         </td>
                         <td>
-                            <div>${publishedDate}</div>
-                            <div style="font-size: 12px; color: var(--text-secondary);">
-                                ${calculateDaysAgo(cve.published_date)}
-                            </div>
+                           <div>${formatLocalDate(publishedDate)}</div>
+<div style="font-size: 12px; color: var(--text-secondary);">
+    ${calculateDaysAgo(publishedDate)}
+</div>
                         </td>
                         <td>
                             <div class="action-buttons">
@@ -1648,22 +1655,61 @@
         }
 
         // Utility Functions
-        function calculateDaysAgo(dateString) {
-            if (!dateString) return 'N/A';
-            
-            try {
-                const date = new Date(dateString);
-                const now = new Date();
-                const diffTime = Math.abs(now - date);
-                const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
-                
-                if (diffDays === 0) return 'Today';
-                if (diffDays === 1) return '1 day ago';
-                return `${diffDays} days ago`;
-            } catch (error) {
-                return 'N/A';
-            }
+      // Remplacer l'ancienne fonction
+function calculateDaysAgo(dateString) {
+    if (!dateString) return 'N/A';
+    
+    try {
+        // Supposer que la date est en UTC
+        const utcDate = new Date(dateString + 'Z'); // Ajouter Z pour UTC
+        const now = new Date();
+        
+        // Appliquer le décalage France (UTC+1)
+        const frOffset = 60; // +1 heure en minutes
+        const localDate = new Date(utcDate.getTime() + frOffset * 60000);
+        const localNow = new Date(now.getTime() + frOffset * 60000);
+        
+        const diffTime = Math.abs(localNow - localDate);
+        const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+        
+        if (diffDays === 0) {
+            // Vérifier si c'est aujourd'hui en France
+            const isToday = localDate.getDate() === localNow.getDate() &&
+                           localDate.getMonth() === localNow.getMonth() &&
+                           localDate.getFullYear() === localNow.getFullYear();
+            return isToday ? 'Aujourd\'hui' : 'Hier';
         }
+        if (diffDays === 1) return 'Il y a 1 jour';
+        return `Il y a ${diffDays} jours (UTC+1)`;
+    } catch (error) {
+        r
+        return 'N/A';
+    }
+    }
+
+
+// Fonction pour formater la date en UTC+1
+function formatLocalDate(dateString) {
+    if (!dateString) return 'N/A';
+    
+    try {
+        // Supposer UTC, convertir en UTC+1
+        const utcDate = new Date(dateString + 'Z');
+        const options = {
+            timeZone: 'Europe/Paris',
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: false
+        };
+        
+        return utcDate.toLocaleString('fr-FR', options);
+    } catch (error) {
+        return dateString;
+    }
+}
 
         function showNotification(type, message) {
             // Create notification element

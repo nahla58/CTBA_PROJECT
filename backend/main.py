@@ -14,6 +14,7 @@ import sqlite3
 import requests
 import schedule
 import time
+import pytz
 import threading
 import uvicorn
 import logging
@@ -23,6 +24,63 @@ import os
 import hashlib
 import binascii
 import jwt
+
+def format_date_for_display(date_str: str) -> Dict[str, str]:
+    """Convert UTC date to local time (UTC+1) for display"""
+    if not date_str:
+        return {
+            'formatted': 'N/A',
+            'utc': 'N/A',
+            'local': 'N/A',
+            'timezone': 'UTC'
+        }
+        
+    try:
+        # Parse UTC date
+        if 'T' in date_str and 'Z' in date_str:
+            utc_date = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+        elif 'T' in date_str:
+            # ISO format without Z
+            utc_date = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+        else:
+            # Simple format
+            utc_date = datetime.strptime(date_str, '%Y-%m-%d %H:%M:%S')
+        
+        # Convert to Europe/Paris (UTC+1)
+        paris_tz = pytz.timezone('Europe/Paris')
+        local_date = utc_date.astimezone(paris_tz)
+        
+        return {
+            'formatted': local_date.strftime('%d/%m/%Y %H:%M'),
+            'utc': utc_date.strftime('%Y-%m-%d %H:%M:%S UTC'),
+            'local': local_date.strftime('%Y-%m-%d %H:%M:%S'),
+            'timezone': 'Europe/Paris (UTC+1)',
+            'iso_local': local_date.isoformat(),
+            'iso_utc': utc_date.isoformat()
+        }
+    except Exception as e:
+        logger.warning(f"Error formatting date {date_str}: {e}")
+        return {
+            'formatted': date_str.replace('T', ' '),
+            'utc': date_str,
+            'local': date_str,
+            'timezone': 'UTC'
+        }
+
+
+def get_current_local_time() -> Dict[str, str]:
+    """Get current time in both UTC and UTC+1"""
+    utc_now = datetime.now(pytz.UTC)
+    paris_tz = pytz.timezone('Europe/Paris')
+    local_now = utc_now.astimezone(paris_tz)
+    
+    return {
+        'utc': utc_now.strftime('%Y-%m-%d %H:%M:%S UTC'),
+        'local': local_now.strftime('%Y-%m-%d %H:%M:%S UTC+1'),
+        'formatted_local': local_now.strftime('%d/%m/%Y %H:%M'),
+        'timezone': 'Europe/Paris',
+        'timestamp': utc_now.isoformat()
+    }
 
 # ========== CONFIGURATION ==========
 logging.basicConfig(
@@ -84,6 +142,7 @@ IMPORT_METRICS = {
     'cved_imported': 0,
     'cved_skipped_blacklist': 0
 }
+
 # ========== DATA MODELS ==========
 class CVESeverity(str, Enum):
     CRITICAL = "CRITICAL"
@@ -92,10 +151,8 @@ class CVESeverity(str, Enum):
     LOW = "LOW"
 
 class CVEStatus(str, Enum):
-   
     ACCEPTED = "ACCEPTED"
     REJECTED = "REJECTED"
-    
 
 class TechnologyStatus(str, Enum):
     OUT_OF_SCOPE = "OUT_OF_SCOPE"
@@ -799,7 +856,7 @@ def import_from_nvd():
                     score = cvss_data.get('baseScore', 5.0)
                     base_severity = cvss_data.get('baseSeverity', 'MEDIUM')
                     if base_severity:
-                        severity = base_severity.upper()
+                        severity = base_severity.UP()
                 elif 'cvssMetricV2' in metrics:
                     cvss_data = metrics['cvssMetricV2'][0]['cvssData']
                     score = cvss_data.get('baseScore', 5.0)
@@ -813,9 +870,22 @@ def import_from_nvd():
                         severity = "LOW"
                 
                 # Extract published date
-                published_date = cve_data.get('published', '')
-                if published_date:
-                    published_date = published_date.replace('T', ' ').split('.')[0]
+                published_date_raw = cve_data.get('published', '')
+                if published_date_raw:
+                    try:
+                        # NVD dates are in UTC with Z suffix
+                        if published_date_raw.endswith('Z'):
+                            # Format: 2026-01-10T00:00:00Z
+                            dt = datetime.fromisoformat(published_date_raw.replace('Z', '+00:00'))
+                            # Store in consistent format
+                            published_date = dt.strftime('%Y-%m-%d %H:%M:%S')
+                        else:
+                            # Fallback
+                            published_date = published_date_raw.replace('T', ' ').split('.')[0]
+                    except Exception:
+                        published_date = published_date_raw.replace('T', ' ').split('.')[0]
+                else:
+                    published_date = None
                 
                 # Get products list (may contain multiple vendor/product tuples)
                 product_list = get_products_for_cve(cve_data)
@@ -1049,6 +1119,21 @@ async def root():
         raise HTTPException(status_code=500, detail='Dashboard not available')
 
 
+@app.get("/api/timezone")
+async def get_timezone_info():
+    """Get timezone information for the dashboard"""
+    return {
+        "server_timezone": "UTC",
+        "display_timezone": "Europe/Paris (UTC+1)",
+        "current_time": get_current_local_time(),
+        "supported_formats": {
+            "database": "UTC",
+            "display": "UTC+1 (Europe/Paris)",
+            "date_format": "DD/MM/YYYY HH:MM"
+        }
+    }
+
+
 @app.get("/api/info")
 async def api_info():
     """API information endpoint (JSON)"""
@@ -1068,6 +1153,8 @@ async def api_info():
         ]
     }
 
+    
+
 @app.get("/api/cves")
 async def get_cves(
     status: Optional[str] = Query(None, description="Filter by status"),
@@ -1078,7 +1165,7 @@ async def get_cves(
     offset: int = Query(0, ge=0)
 ):
     """
-    Get CVEs with filtering options
+    Get CVEs with filtering options - CORRIGÉ
     """
     try:
         conn = get_db_connection()
@@ -1088,24 +1175,23 @@ async def get_cves(
         query = "SELECT * FROM cves WHERE 1=1"
         params = []
 
-        # Status filter (default to PENDING if not provided)
+        # Status filter
         if status and status in ['PENDING', 'ACCEPTED', 'REJECTED', 'DEFERRED']:
             query += " AND status = ?"
             params.append(status)
         else:
-            # Default: only show HIGH and MEDIUM if no severity provided
-            if severity and severity in ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW']:
-                query += " AND severity = ?"
-                params.append(severity)
-            elif not severity:
-                query += " AND severity IN ('HIGH','MEDIUM')"
+            # Default to PENDING
+            query += " AND status = 'PENDING'"
+        
+        # Severity filter
         if severity and severity in ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW']:
             query += " AND severity = ?"
             params.append(severity)
         else:
+            # Default to HIGH and MEDIUM
             query += " AND severity IN ('HIGH','MEDIUM')"
 
-        # Vendor/Product filtering via affected_products existence
+        # Vendor/Product filtering
         if vendor:
             query += " AND EXISTS (SELECT 1 FROM affected_products ap WHERE ap.cve_id = cves.cve_id AND LOWER(ap.vendor) LIKE ? )"
             params.append(f"%{vendor.lower()}%")
@@ -1117,69 +1203,75 @@ async def get_cves(
         params.extend([limit, offset])
 
         cursor.execute(query, params)
+        
         cves = []
         
         for row in cursor.fetchall():
-            cve = dict(row)
-            cve_id = cve['cve_id']
-            
-            # Get affected products (all) including confidence and matched technology status
-            cursor.execute('''
-                SELECT vendor, product, confidence 
-                FROM affected_products 
-                WHERE cve_id = ?
-            ''', (cve_id,))
-            rows = cursor.fetchall()
-            products_list = []
-            tech_statuses = []
-            if rows:
-                for r in rows:
-                    vendor_p = r['vendor']
-                    product_p = r['product']
-                    confidence_p = float(r['confidence'] or 0.0)
-                    # Lookup technology status if analyst has added it
-                    cursor.execute('SELECT status FROM technologies WHERE LOWER(vendor) = ? AND LOWER(product) = ? LIMIT 1', (vendor_p.lower(), product_p.lower()))
-                    tech_row = cursor.fetchone()
-                    tech_status = tech_row['status'] if tech_row else None
-                    if tech_status:
-                        tech_statuses.append(tech_status)
-                    products_list.append({'vendor': vendor_p, 'product': product_p, 'confidence': confidence_p, 'tech_status': tech_status})
-                cve['affected_products'] = products_list
-            else:
-                cve['affected_products'] = [{'vendor': 'Unknown', 'product': 'Multiple Products', 'confidence': 0.0, 'tech_status': None}]
+            try:
+                cve = dict(row)
+                cve_id = cve['cve_id']
+                
+                # ⚠️ CRÉEZ UN NOUVEAU CURSEUR POUR LA SOUS-REQUÊTE ⚠️
+                cursor2 = conn.cursor()
+                cursor2.execute('''
+                    SELECT vendor, product, confidence 
+                    FROM affected_products 
+                    WHERE cve_id = ?
+                ''', (cve_id,))
+                rows = cursor2.fetchall()
+                
+                products_list = []
+                if rows:
+                    for r in rows:
+                        products_list.append({
+                            'vendor': r['vendor'], 
+                            'product': r['product'], 
+                            'confidence': float(r['confidence'] or 0.0)
+                        })
+                    cve['affected_products'] = products_list
+                else:
+                    cve['affected_products'] = [{'vendor': 'Unknown', 'product': 'Multiple Products', 'confidence': 0.0}]
 
-            # Determine matched_technology_status for the CVE (priority: OUT_OF_SCOPE > PRIORITY > NORMAL)
-            matched_status = None
-            if tech_statuses:
-                if any(s == 'OUT_OF_SCOPE' for s in tech_statuses):
-                    matched_status = 'OUT_OF_SCOPE'
-                elif any(s == 'PRIORITY' for s in tech_statuses):
-                    matched_status = 'PRIORITY'
-                elif any(s == 'NORMAL' for s in tech_statuses):
-                    matched_status = 'NORMAL'
-            cve['matched_technology_status'] = matched_status
-
-            # Add a short summary (for display above the CVE)
-            cve['short_description'] = (cve.get('description') or '')[:300]
-            
-            # Format date
-            if cve['published_date']:
-                cve['published_date_formatted'] = cve['published_date'].replace('T', ' ')
-            
-            cves.append(cve)
+                # Add a short summary
+                cve['short_description'] = (cve.get('description') or '')[:300]
+                
+                # Format date if exists
+                if cve['published_date']:
+                    try:
+                        if 'T' in cve['published_date'] and 'Z' in cve['published_date']:
+                            utc_date = datetime.fromisoformat(cve['published_date'].replace('Z', '+00:00'))
+                        else:
+                            utc_date = datetime.strptime(cve['published_date'], '%Y-%m-%d %H:%M:%S')
+                        
+                        paris_tz = pytz.timezone('Europe/Paris')
+                        local_date = utc_date.astimezone(paris_tz)
+                        
+                        cve['published_date_formatted'] = local_date.strftime('%d/%m/%Y %H:%M')
+                        cve['published_date_utc'] = utc_date.strftime('%Y-%m-%d %H:%M:%S UTC')
+                        cve['published_date_local'] = local_date.strftime('%Y-%m-%d %H:%M:%S UTC+1')
+                        cve['timezone'] = 'Europe/Paris (UTC+1)'
+                        
+                    except Exception as e:
+                        cve['published_date_formatted'] = cve['published_date'].replace('T', ' ')
+                else:
+                    cve['published_date_formatted'] = 'N/A'
+                
+                cves.append(cve)
+                
+            except Exception as e:
+                logger.error(f"Error processing CVE {cve_id}: {e}")
+                continue  # Continue avec le prochain CVE
         
-        # Get total count (use DISTINCT to avoid duplicates when joining via EXISTS)
+        # Count query
         count_query = "SELECT COUNT(*) FROM cves WHERE 1=1"
         count_params = []
+        
         if status and status in ['PENDING', 'ACCEPTED', 'REJECTED', 'DEFERRED']:
-            # Default severity filter in count as well
-            if severity and severity in ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW']:
-                count_query += " AND severity = ?"
-                count_params.append(severity)
-            elif not severity:
-                count_query += " AND severity IN ('HIGH','MEDIUM')"
+            count_query += " AND status = ?"
+            count_params.append(status)
+        else:
             count_query += " AND status = 'PENDING'"
-
+        
         if severity and severity in ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW']:
             count_query += " AND severity = ?"
             count_params.append(severity)
@@ -1213,6 +1305,97 @@ async def get_cves(
         logger.error(f"❌ Error fetching CVEs: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
+@app.get("/api/simple-cves")
+async def simple_cves():
+    """Simple test without complex filtering"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    # Exact same query as debug-filter
+    cursor.execute("SELECT * FROM cves WHERE status = 'PENDING' AND severity IN ('HIGH','MEDIUM') ORDER BY published_date DESC LIMIT 50")
+    
+    results = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    
+    return {
+        "count": len(results),
+        "cves": results[:5]  # First 5 only
+    }
+
+
+@app.get("/api/debug-filter")
+async def debug_filter():
+    """Debug the filter logic"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    # Test 1: Exact same query as get_cves
+    query1 = "SELECT * FROM cves WHERE 1=1 AND status = 'PENDING' AND severity IN ('HIGH','MEDIUM') ORDER BY published_date DESC LIMIT 50"
+    cursor.execute(query1)
+    results1 = cursor.fetchall()
+    
+    # Test 2: Check what severities actually exist
+    query2 = "SELECT DISTINCT severity FROM cves WHERE status = 'PENDING'"
+    cursor.execute(query2)
+    actual_severities = [r['severity'] for r in cursor.fetchall()]
+    
+    # Test 3: Count by severity
+    query3 = "SELECT severity, COUNT(*) as count FROM cves WHERE status = 'PENDING' GROUP BY severity"
+    cursor.execute(query3)
+    severity_counts = dict(cursor.fetchall())
+    
+    # Test 4: Show some samples
+    query4 = "SELECT cve_id, severity FROM cves WHERE status = 'PENDING' ORDER BY published_date DESC LIMIT 5"
+    cursor.execute(query4)
+    samples = [dict(r) for r in cursor.fetchall()]
+    
+    conn.close()
+    
+    return {
+        "test1_query": query1,
+        "test1_results_count": len(results1),
+        "actual_severities_in_db": actual_severities,
+        "severity_counts": severity_counts,
+        "sample_cves": samples,
+        "note": "If test1_results_count is 0 but we have CVEs, the severity values in DB don't match 'HIGH' or 'MEDIUM'"
+    }
+
+
+@app.get("/api/all-pending")
+async def all_pending():
+    """Get ALL pending CVEs regardless of severity"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        SELECT c.*, 
+               GROUP_CONCAT(ap.vendor || ': ' || ap.product, '; ') as products
+        FROM cves c
+        LEFT JOIN affected_products ap ON c.cve_id = ap.cve_id
+        WHERE c.status = 'PENDING'
+        GROUP BY c.cve_id
+        ORDER BY c.published_date DESC
+    ''')
+    
+    results = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    
+    return {
+        "count": len(results),
+        "cves": results
+    }
+
+# Endpoint de test pour voir tous les CVEs
+@app.get("/api/test-cves")
+async def test_cves():
+    """Test endpoint to see all CVEs"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT cve_id, severity, status, published_date FROM cves ORDER BY published_date DESC")
+    rows = cursor.fetchall()
+    conn.close()
+    return {"cves": [dict(row) for row in rows]}
 
 @app.get('/api/stats')
 async def api_stats():
@@ -1461,6 +1644,38 @@ async def add_technology(tech: TechnologyCreate, current_user: dict = Depends(ge
     except Exception as e:
         logger.error(f"Error adding technology: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+@app.get("/api/cves-simple")
+async def get_cves_simple():
+    """Simple version without complex processing"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT cve_id, description, severity, cvss_score, published_date, status
+            FROM cves 
+            WHERE status = 'PENDING'
+            ORDER BY published_date DESC 
+            LIMIT 10
+        """)
+        
+        cves = []
+        for row in cursor.fetchall():
+            cve = dict(row)
+            cve['short_description'] = (cve.get('description') or '')[:100]
+            cves.append(cve)
+        
+        conn.close()
+        
+        return {
+            "success": True,
+            "cves": cves,
+            "count": len(cves)
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Error in cves-simple: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/technologies")
@@ -1626,7 +1841,6 @@ async def frontend_technologies_stats():
     except Exception as e:
         logger.error(f"Error computing technology stats: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-        
 
 # ========== MAIN ENTRY POINT ==========
 if __name__ == "__main__":
