@@ -1,0 +1,6 @@
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+requests==2.31.0
+# JWT helper
+PyJWT==2.8.0
+# sqlite3 est déjà dans Python, pas besoin de l'installer

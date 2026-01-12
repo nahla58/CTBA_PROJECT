@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 80" width="300" height="80">
+  <rect width="100%" height="100%" fill="white"/>
+  <g transform="translate(12,10)">
+    <path d="M10 50 L10 20 L35 20 L35 50 Z" fill="#4b6ea5"/>
+    <path d="M60 10 L90 10 L90 40 Z" fill="#d83a3a"/>
+    <text x="110" y="36" font-family="Arial, Helvetica, sans-serif" font-size="20" fill="#2b2f33">by nomios</text>
+  </g>
+</svg>

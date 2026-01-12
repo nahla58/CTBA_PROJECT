@@ -1,0 +1,546 @@
+# main.py - API CTBA DYNAMIQUE AVEC AUTOMATISATION
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+import sqlite3
+import json
+from datetime import datetime, timezone, timedelta
+from typing import Optional, List
+import threading
+import schedule
+import time
+import requests
+import asyncio
+
+# ========== 1. CRÉER L'APPLICATION ==========
+app = FastAPI(
+    title="CTBA API - Version Dynamique",
+    description="API pour la gestion des CVE avec automatisation NVD",
+    version="2.0.0"
+)
+
+# ========== 2. AUTORISER REACT ==========
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],  # React
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ========== 3. WEBSOCKET POUR MISE À JOUR EN TEMPS RÉEL ==========
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: List[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+
+    def disconnect(self, websocket: WebSocket):
+        self.active_connections.remove(websocket)
+
+    async def broadcast(self, message: str):
+        for connection in self.active_connections:
+            try:
+                await connection.send_text(message)
+            except:
+                pass
+
+manager = ConnectionManager()
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await manager.connect(websocket)
+    try:
+        while True:
+            # Attendre des messages (maintenir la connexion)
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
+        print("🔌 Client WebSocket déconnecté")
+
+# ========== 4. BASE DE DONNÉES ==========
+def init_database():
+    """Crée ou met à jour la base de données SQLite"""
+    conn = sqlite3.connect("ctba.db")
+    cursor = conn.cursor()
+    
+    # Table CVE
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS cves (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            cve_id TEXT UNIQUE NOT NULL,
+            description TEXT,
+            severity TEXT,
+            cvss_score REAL,
+            published_date TEXT,
+            status TEXT DEFAULT 'PENDING',
+            imported_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
+    # Table décisions
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS decisions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            cve_id TEXT,
+            decision TEXT,
+            analyst TEXT,
+            comments TEXT,
+            decision_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
+    # Table d'audit pour les imports
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS imports_audit (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            import_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            cves_found INTEGER,
+            cves_added INTEGER,
+            duration_seconds REAL
+        )
+    ''')
+    
+    # Ajouter une CVE de test si totalement vide
+    cursor.execute("SELECT COUNT(*) FROM cves")
+    if cursor.fetchone()[0] == 0:
+        cursor.execute('''
+            INSERT INTO cves (cve_id, description, severity, cvss_score, published_date)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (
+            "CVE-2024-99999",
+            "Vulnerability test pour démonstration",
+            "HIGH",
+            7.5,
+            datetime.now(timezone.utc).isoformat()
+        ))
+        print("✅ CVE de test ajoutée")
+    
+    conn.commit()
+    conn.close()
+    print("✅ Base de données initialisée")
+
+# ========== 5. IMPORTATION DYNAMIQUE NVD ==========
+def import_from_nvd(hours_back=24, min_severity="HIGH"):
+    """Importe les CVE depuis NVD de manière dynamique"""
+    print(f"\n{'='*60}")
+    print("🔄 IMPORTATION DYNAMIQUE NVD")
+    print(f"{'='*60}")
+    
+    start_time = time.time()
+    
+    try:
+        # Date : dernières X heures
+        end_date = datetime.now(timezone.utc)
+        start_date = end_date - timedelta(hours=hours_back)
+        
+        print(f"📅 Période : {start_date.strftime('%Y-%m-%d %H:%M')} → {end_date.strftime('%Y-%m-%d %H:%M')}")
+        
+        # Appel API NVD
+        url = "https://services.nvd.nist.gov/rest/json/cves/2.0"
+        params = {
+            "pubStartDate": start_date.strftime("%Y-%m-%dT%H:%M:%S"),
+            "pubEndDate": end_date.strftime("%Y-%m-%dT%H:%M:%S"),
+            "resultsPerPage": 200
+        }
+        
+        response = requests.get(url, params=params, timeout=30)
+        response.raise_for_status()
+        data = response.json()
+        
+        total_cves = data.get('totalResults', 0)
+        print(f"📦 {total_cves} CVE trouvées sur NVD")
+        
+        # Connexion base
+        conn = sqlite3.connect("ctba.db")
+        cursor = conn.cursor()
+        
+        added = 0
+        severity_count = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
+        
+        for vuln in data.get('vulnerabilities', []):
+            cve_data = vuln.get('cve', {})
+            cve_id = cve_data.get('id', '')
+            
+            # Vérifier si existe déjà
+            cursor.execute("SELECT * FROM cves WHERE cve_id = ?", (cve_id,))
+            if cursor.fetchone():
+                continue  # Déjà dans la base
+            
+            # Extraire description
+            description = "No description available"
+            for desc in cve_data.get('descriptions', []):
+                if desc.get('lang') == 'en':
+                    description = desc.get('value', '')
+                    break
+            
+            # Extraire sévérité et score
+            severity = "LOW"
+            score = 0.0
+            metrics = cve_data.get('metrics', {})
+            
+            if 'cvssMetricV31' in metrics:
+                severity = metrics['cvssMetricV31'][0]['cvssData']['baseSeverity']
+                score = metrics['cvssMetricV31'][0]['cvssData']['baseScore']
+            elif 'cvssMetricV30' in metrics:
+                severity = metrics['cvssMetricV30'][0]['cvssData']['baseSeverity']
+                score = metrics['cvssMetricV30'][0]['cvssData']['baseScore']
+            elif 'cvssMetricV2' in metrics:
+                score = metrics['cvssMetricV2'][0]['cvssData']['baseScore']
+                if score >= 9.0: severity = "CRITICAL"
+                elif score >= 7.0: severity = "HIGH"
+                elif score >= 4.0: severity = "MEDIUM"
+                else: severity = "LOW"
+            
+            # Compter par sévérité
+            severity_count[severity] = severity_count.get(severity, 0) + 1
+            
+            # Filtrer par sévérité minimale
+            severity_order = {"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1}
+            if severity_order.get(severity, 0) >= severity_order.get(min_severity, 2):
+                try:
+                    cursor.execute('''
+                        INSERT INTO cves (cve_id, description, severity, cvss_score, published_date, imported_at)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                    ''', (
+                        cve_id,
+                        description[:500],  # Limiter la longueur
+                        severity,
+                        float(score) if score else 0.0,
+                        cve_data.get('published', ''),
+                        datetime.now(timezone.utc).isoformat()
+                    ))
+                    added += 1
+                    
+                    # Afficher les critiques immédiatement
+                    if severity == "CRITICAL":
+                        print(f"  🚨 {cve_id} - {severity} (Score: {score})")
+                        
+                except Exception as e:
+                    print(f"  ⚠️ Erreur avec {cve_id}: {e}")
+        
+        # Enregistrer l'audit
+        duration = time.time() - start_time
+        cursor.execute('''
+            INSERT INTO imports_audit (cves_found, cves_added, duration_seconds)
+            VALUES (?, ?, ?)
+        ''', (total_cves, added, duration))
+        
+        conn.commit()
+        conn.close()
+        
+        # Afficher rapport
+        print(f"\n📊 RAPPORT D'IMPORTATION :")
+        print(f"  ✅ Nouvelles CVE ajoutées : {added}")
+        print(f"  ⏱️  Durée : {duration:.2f} secondes")
+        print(f"  🎯 Répartition par sévérité :")
+        for sev, count in severity_count.items():
+            if count > 0:
+                print(f"    • {sev}: {count} CVE")
+        
+        # Notifier via WebSocket si nouvelles CVE
+        if added > 0:
+            asyncio.run(manager.broadcast(f"new_cves:{added}"))
+            print(f"  🔔 Notification envoyée aux clients")
+        
+        print(f"{'='*60}")
+        return added
+        
+    except requests.exceptions.RequestException as e:
+        print(f"❌ Erreur réseau NVD: {e}")
+        return -1
+    except Exception as e:
+        print(f"❌ Erreur inattendue: {e}")
+        return -1
+
+# ========== 6. AUTOMATISATION ==========
+def start_automation():
+    """Démarre l'automatisation des tâches"""
+    print("\n🤖 DÉMARRAGE DE L'AUTOMATISATION")
+    
+    # Planifier les tâches
+    schedule.every(2).hours.do(lambda: import_from_nvd(hours_back=2, min_severity="HIGH"))
+    schedule.every(1).days.at("08:00").do(lambda: import_from_nvd(hours_back=24, min_severity="MEDIUM"))
+    
+    # Exécuter la première importation immédiatement
+    print("⚡ Première importation immédiate...")
+    import_from_nvd(hours_back=6, min_severity="HIGH")
+    
+    # Lancer le scheduler dans un thread séparé
+    def scheduler_loop():
+        print("⏰ Planificateur démarré (toutes les 2 heures)")
+        while True:
+            schedule.run_pending()
+            time.sleep(60)  # Vérifier toutes les minutes
+    
+    thread = threading.Thread(target=scheduler_loop, daemon=True)
+    thread.start()
+    
+    return thread
+
+# ========== 7. ROUTES API ==========
+@app.get("/")
+def root():
+    """Page d'accueil"""
+    conn = sqlite3.connect("ctba.db")
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT COUNT(*) FROM cves")
+    total_cves = cursor.fetchone()[0]
+    
+    cursor.execute("SELECT COUNT(*) FROM cves WHERE status = 'PENDING'")
+    pending_cves = cursor.fetchone()[0]
+    
+    cursor.execute("SELECT MAX(import_date) FROM imports_audit")
+    last_import = cursor.fetchone()[0]
+    
+    conn.close()
+    
+    return {
+        "message": "CTBA API - Version Dynamique",
+        "version": "2.0.0",
+        "status": "running",
+        "automation": "active",
+        "statistics": {
+            "total_cves": total_cves,
+            "pending_cves": pending_cves,
+            "last_import": last_import
+        },
+        "endpoints": [
+            "GET /cves - Liste des CVE",
+            "GET /cves/{cve_id} - Détail d'une CVE",
+            "POST /cves/{cve_id}/decision - Valider/Rejeter",
+            "GET /stats - Statistiques",
+            "GET /import/now - Importer maintenant",
+            "GET /automation/status - État de l'automatisation",
+            "WS /ws - WebSocket pour mises à jour"
+        ]
+    }
+
+@app.get("/cves")
+def get_cves(
+    status: Optional[str] = None,
+    severity: Optional[str] = None,
+    limit: int = 100
+):
+    """Récupère la liste des CVE"""
+    conn = sqlite3.connect("ctba.db")
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    
+    query = "SELECT * FROM cves WHERE 1=1"
+    params = []
+    
+    if status:
+        query += " AND status = ?"
+        params.append(status)
+    
+    if severity:
+        query += " AND severity = ?"
+        params.append(severity)
+    
+    query += " ORDER BY published_date DESC LIMIT ?"
+    params.append(limit)
+    
+    cursor.execute(query, params)
+    cves = cursor.fetchall()
+    conn.close()
+    
+    return [dict(cve) for cve in cves]
+
+@app.get("/cves/{cve_id}")
+def get_cve(cve_id: str):
+    """Récupère les détails d'une CVE"""
+    conn = sqlite3.connect("ctba.db")
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    
+    cursor.execute("SELECT * FROM cves WHERE cve_id = ?", (cve_id,))
+    cve = cursor.fetchone()
+    
+    if not cve:
+        raise HTTPException(status_code=404, detail="CVE non trouvée")
+    
+    cursor.execute(
+        "SELECT * FROM decisions WHERE cve_id = ? ORDER BY decision_date DESC",
+        (cve_id,)
+    )
+    decisions = cursor.fetchall()
+    
+    conn.close()
+    
+    return {
+        "cve": dict(cve),
+        "decisions": [dict(dec) for dec in decisions]
+    }
+
+@app.post("/cves/{cve_id}/decision")
+def make_decision(cve_id: str, decision: dict):
+    """Valide ou rejette une CVE"""
+    if decision.get("decision") not in ["VALIDATED", "REJECTED"]:
+        raise HTTPException(status_code=400, detail="Décision doit être VALIDATED ou REJECTED")
+    
+    conn = sqlite3.connect("ctba.db")
+    cursor = conn.cursor()
+    
+    # Vérifier que la CVE existe
+    cursor.execute("SELECT * FROM cves WHERE cve_id = ?", (cve_id,))
+    if not cursor.fetchone():
+        conn.close()
+        raise HTTPException(status_code=404, detail="CVE non trouvée")
+    
+    # Enregistrer la décision
+    cursor.execute('''
+        INSERT INTO decisions (cve_id, decision, analyst, comments)
+        VALUES (?, ?, ?, ?)
+    ''', (
+        cve_id,
+        decision.get("decision"),
+        decision.get("analyst", "unknown"),
+        decision.get("comments", "")
+    ))
+    
+    # Mettre à jour le statut de la CVE
+    cursor.execute('''
+        UPDATE cves SET status = ? WHERE cve_id = ?
+    ''', (decision.get("decision"), cve_id))
+    
+    conn.commit()
+    conn.close()
+    
+    # Notifier via WebSocket
+    asyncio.run(manager.broadcast(f"decision:{cve_id}:{decision.get('decision')}"))
+    
+    return {
+        "message": f"CVE {cve_id} {decision.get('decision')} avec succès",
+        "cve_id": cve_id,
+        "decision": decision.get("decision"),
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }
+
+@app.get("/stats")
+def get_stats():
+    """Statistiques détaillées des CVE"""
+    conn = sqlite3.connect("ctba.db")
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    
+    # Totaux
+    cursor.execute("SELECT COUNT(*) as total FROM cves")
+    total = cursor.fetchone()["total"]
+    
+    cursor.execute("SELECT COUNT(*) as pending FROM cves WHERE status = 'PENDING'")
+    pending = cursor.fetchone()["pending"]
+    
+    # Par statut
+    cursor.execute("SELECT status, COUNT(*) as count FROM cves GROUP BY status")
+    by_status = {row["status"]: row["count"] for row in cursor.fetchall()}
+    
+    # Par sévérité
+    cursor.execute("SELECT severity, COUNT(*) as count FROM cves GROUP BY severity")
+    by_severity = {row["severity"]: row["count"] for row in cursor.fetchall()}
+    
+    # Dernières importations
+    cursor.execute("""
+        SELECT import_date, cves_found, cves_added, duration_seconds 
+        FROM imports_audit 
+        ORDER BY import_date DESC 
+        LIMIT 5
+    """)
+    recent_imports = [dict(row) for row in cursor.fetchall()]
+    
+    # Activité récente
+    cursor.execute("""
+        SELECT decision_date, decision, COUNT(*) as count 
+        FROM decisions 
+        WHERE decision_date >= datetime('now', '-7 days')
+        GROUP BY DATE(decision_date), decision
+        ORDER BY decision_date DESC
+    """)
+    recent_activity = [dict(row) for row in cursor.fetchall()]
+    
+    conn.close()
+    
+    return {
+        "summary": {
+            "total_cves": total,
+            "pending_cves": pending,
+            "processed_cves": total - pending
+        },
+        "distribution": {
+            "by_status": by_status,
+            "by_severity": by_severity
+        },
+        "automation": {
+            "recent_imports": recent_imports,
+            "import_count": len(recent_imports)
+        },
+        "activity": {
+            "recent_decisions": recent_activity
+        },
+        "last_update": datetime.now(timezone.utc).isoformat()
+    }
+
+@app.get("/import/now")
+def import_now():
+    """Déclenche une importation manuelle"""
+    added = import_from_nvd(hours_back=6, min_severity="HIGH")
+    return {
+        "action": "manual_import",
+        "cves_added": added,
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }
+
+@app.get("/automation/status")
+def automation_status():
+    """Retourne l'état de l'automatisation"""
+    jobs = []
+    for job in schedule.get_jobs():
+        jobs.append({
+            "next_run": str(job.next_run),
+            "interval": str(job.interval),
+            "unit": str(job.unit)
+        })
+    
+    return {
+        "automation": "active",
+        "jobs_count": len(jobs),
+        "jobs": jobs,
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }
+
+# ========== 8. DÉMARRAGE ==========
+if __name__ == "__main__":
+    import uvicorn
+    
+    # Initialiser la base
+    init_database()
+    
+    # Démarrer l'automatisation
+    automation_thread = start_automation()
+    
+    print("\n" + "="*60)
+    print("🚀 CTBA API - VERSION DYNAMIQUE")
+    print("="*60)
+    print("📍 Accès API    : http://localhost:8000")
+    print("📚 Documentation : http://localhost:8000/docs")
+    print("🔌 WebSocket    : ws://localhost:8000/ws")
+    print("🤖 Automatisation : Active (toutes les 2 heures)")
+    print("="*60)
+    print("⚡ Endpoints spéciaux :")
+    print("  • GET /import/now       → Importation manuelle")
+    print("  • GET /automation/status → État de l'automatisation")
+    print("  • WS /ws                → Mises à jour temps réel")
+    print("="*60)
+    print("⚠️  APPUYEZ SUR Ctrl+C POUR ARRÊTER")
+    print("="*60)
+    
+    # Démarrer le serveur
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=True
+    )
