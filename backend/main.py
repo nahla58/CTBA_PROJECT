@@ -6,6 +6,7 @@ from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, Query, Hea
 from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
+from nlp_extractor import nlp_extractor
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
 from datetime import datetime, timedelta
@@ -13,6 +14,8 @@ from enum import Enum
 import sqlite3
 import requests
 import schedule
+import spacy
+from typing import List, Tuple, Dict, Any
 import time
 import pytz
 import threading
@@ -24,6 +27,12 @@ import os
 import hashlib
 import binascii
 import jwt
+
+
+
+class NLPTestRequest(BaseModel):
+    description: str
+    cve_id: Optional[str] = None
 
 def format_date_for_display(date_str: str) -> Dict[str, str]:
     """Convert UTC date to local time (UTC+1) for display"""
@@ -174,11 +183,33 @@ class TechnologyCreate(BaseModel):
     added_by: str = "analyst"
 
 # ========== DATABASE MANAGER ==========
+#@asynccontextmanager
+
+#async def lifespan(app: FastAPI):
+    #"""Lifespan context manager pour FastAPI"""
+    # Startup
+    #logger.info("Starting CTBA Platform API...")
+    #init_database()
+    # Start import immediately
+    #threading.Thread(target=import_from_nvd, daemon=True).start()
+    #start_import_scheduler()
+    #logger.info("CTBA Platform API started successfully")
+    
+    #yield
+    
+    
+    # Shutdown
+    #logger.info("Shutting down CTBA Platform API...")
+    # CORRIGEZ COMME ÇA :
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifespan context manager pour FastAPI"""
     # Startup
     logger.info("Starting CTBA Platform API...")
+    
+    # Initialiser NLP extractor (en parallèle)
+    nlp_extractor.initialize()
+    
     init_database()
     # Start import immediately
     threading.Thread(target=import_from_nvd, daemon=True).start()
@@ -189,9 +220,8 @@ async def lifespan(app: FastAPI):
     
     # Shutdown
     logger.info("Shutting down CTBA Platform API...")
-
 app = FastAPI(
-    title="CTBA Platform API",
+    #title="CTBA Platform API",
     description="CVE Management System with Dynamic Blacklist",
     version="7.0.0",
     docs_url="/api/docs",
@@ -481,6 +511,75 @@ def extract_vendor_product_from_cpe(cpe_uri: str):
         logger.debug(f"Error extracting from CPE {cpe_uri[:50]}: {e}")
     
     return None, None
+
+def extract_products_with_nlp(description: str) -> List[Dict[str, Any]]:
+    """
+    Extract products using NLP (spaCy) with advanced heuristics
+    Returns list of products with confidence scores
+    """
+    if not description or not nlp:
+        return []
+    
+    try:
+        doc = nlp(description)
+        products = []
+        
+        # 1. ENTITY RECOGNITION (NER)
+        for ent in doc.ents:
+            if ent.label_ in ['ORG', 'PRODUCT', 'GPE']:
+                # Filtrer les entités trop génériques
+                entity_text = ent.text.strip()
+                if is_valid_product_name(entity_text):
+                    confidence = calculate_ner_confidence(ent)
+                    products.append({
+                        'text': entity_text,
+                        'type': ent.label_,
+                        'confidence': confidence,
+                        'source': 'ner',
+                        'start': ent.start_char,
+                        'end': ent.end_char
+                    })
+        
+        # 2. NOUN PHRASE EXTRACTION
+        for chunk in doc.noun_chunks:
+            chunk_text = chunk.text.strip()
+            if len(chunk_text.split()) >= 2:  # Au moins 2 mots
+                if is_product_like_noun_phrase(chunk_text, chunk):
+                    confidence = calculate_np_confidence(chunk)
+                    if confidence > 0.5:
+                        products.append({
+                            'text': chunk_text,
+                            'type': 'NOUN_PHRASE',
+                            'confidence': confidence,
+                            'source': 'noun_chunk',
+                            'start': chunk.start_char,
+                            'end': chunk.end_char
+                        })
+        
+        # 3. DEPENDENCY PARSING pour trouver "product of vendor"
+        product_patterns = extract_with_dependency_patterns(doc)
+        products.extend(product_patterns)
+        
+        # 4. DÉDUPICATION et fusion
+        merged_products = merge_overlapping_products(products)
+        
+        # 5. EXTRACTION VENDOR/PRODUCT
+        vendor_product_pairs = []
+        for prod in merged_products:
+            vendor, product = extract_vendor_product_from_entity(prod['text'], doc)
+            if vendor and product:
+                vendor_product_pairs.append({
+                    'vendor': vendor,
+                    'product': product,
+                    'confidence': prod['confidence'] * 0.9,
+                    'source': prod['source'] + '_nlp'
+                })
+        
+        return vendor_product_pairs[:3]  # Limiter à 3 meilleurs résultats
+        
+    except Exception as e:
+        logger.error(f"NLP extraction error: {e}")
+        return []
 
 def clean_cpe_value(value: str) -> str:
     """Nettoyer une valeur CPE"""
@@ -2013,6 +2112,174 @@ async def import_test_now():
             "error": str(e),
             "message": "Failed to import latest CVEs"
         }
+
+@app.post("/api/nlp/extract")
+async def nlp_extract_products(request: NLPTestRequest):
+    """
+    Test endpoint pour l'extraction NLP parallèle
+    """
+    try:
+        products = nlp_extractor.extract_products(
+            request.description, 
+            request.cve_id or ""
+        )
+        
+        return {
+            "success": True,
+            "input_length": len(request.description),
+            "products_found": len(products),
+            "products": products,
+            "nlp_initialized": nlp_extractor.initialized
+        }
+    except Exception as e:
+        logger.error(f"NLP extraction API error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/nlp/test-cve/{cve_id}")
+async def test_nlp_on_cve(cve_id: str):
+    """
+    Tester NLP sur un CVE existant
+    """
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("SELECT description FROM cves WHERE cve_id = ?", (cve_id,))
+        row = cursor.fetchone()
+        conn.close()
+        
+        if not row:
+            raise HTTPException(status_code=404, detail="CVE not found")
+        
+        description = row['description'] or ""
+        
+        # Extraction avec NLP
+        nlp_products = nlp_extractor.extract_products(description, cve_id)
+        
+        # Comparer avec l'extraction existante
+        cursor = get_db_connection().cursor()
+        cursor.execute("""
+            SELECT vendor, product, confidence, source 
+            FROM affected_products 
+            WHERE cve_id = ?
+        """, (cve_id,))
+        
+        existing_products = []
+        for row in cursor.fetchall():
+            existing_products.append(dict(row))
+        
+        cursor.connection.close()
+        
+        return {
+            "success": True,
+            "cve_id": cve_id,
+            "description_preview": description[:200] + "..." if len(description) > 200 else description,
+            "nlp_products": nlp_products,
+            "existing_products": existing_products,
+            "comparison": {
+                "nlp_count": len(nlp_products),
+                "existing_count": len(existing_products),
+                "matches": len([p for p in nlp_products if any(
+                    ep['vendor'].lower() == p['vendor'].lower() and 
+                    ep['product'].lower() == p['product'].lower() 
+                    for ep in existing_products
+                )])
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"NLP test error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/nlp/improve-cves")
+async def improve_cves_with_nlp(batch_size: int = 10):
+    """
+    Améliorer les CVEs existants avec NLP (batch processing)
+    """
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # Récupérer les CVEs avec extraction faible
+        cursor.execute("""
+            SELECT c.cve_id, c.description, 
+                   COUNT(ap.id) as product_count,
+                   AVG(ap.confidence) as avg_confidence
+            FROM cves c
+            LEFT JOIN affected_products ap ON c.cve_id = ap.cve_id
+            WHERE c.description IS NOT NULL 
+            AND LENGTH(c.description) > 50
+            GROUP BY c.cve_id
+            HAVING product_count = 0 OR avg_confidence < 0.5
+            ORDER BY c.published_date DESC
+            LIMIT ?
+        """, (batch_size,))
+        
+        cves_to_improve = []
+        for row in cursor.fetchall():
+            cves_to_improve.append(dict(row))
+        
+        improvements = []
+        
+        for cve in cves_to_improve:
+            cve_id = cve['cve_id']
+            description = cve['description']
+            
+            # Extraire avec NLP
+            nlp_products = nlp_extractor.extract_products(description, cve_id)
+            
+            if nlp_products:
+                # Comparer avec l'existant
+                cursor2 = conn.cursor()
+                cursor2.execute("""
+                    SELECT vendor, product FROM affected_products 
+                    WHERE cve_id = ?
+                """, (cve_id,))
+                
+                existing = [(r['vendor'].lower(), r['product'].lower()) 
+                           for r in cursor2.fetchall()]
+                
+                new_products = []
+                for prod in nlp_products:
+                    key = (prod['vendor'].lower(), prod['product'].lower())
+                    if key not in existing:
+                        new_products.append(prod)
+                
+                # Ajouter les nouveaux produits
+                for prod in new_products:
+                    cursor2.execute("""
+                        INSERT OR IGNORE INTO affected_products 
+                        (cve_id, vendor, product, confidence, source)
+                        VALUES (?, ?, ?, ?, ?)
+                    """, (
+                        cve_id,
+                        prod['vendor'][:50],
+                        prod['product'][:50],
+                        prod['confidence'],
+                        prod.get('source', 'nlp_improvement')
+                    ))
+                
+                if new_products:
+                    improvements.append({
+                        'cve_id': cve_id,
+                        'new_products': len(new_products),
+                        'products': new_products
+                    })
+        
+        conn.commit()
+        conn.close()
+        
+        return {
+            "success": True,
+            "processed": len(cves_to_improve),
+            "improved": len(improvements),
+            "improvements": improvements,
+            "message": f"Improved {len(improvements)} CVEs with NLP"
+        }
+        
+    except Exception as e:
+        logger.error(f"NLP improvement error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 @app.post("/api/fix-missing-descriptions")
 async def fix_missing_descriptions():
     """Récupérer les descriptions manquantes depuis NVD"""
