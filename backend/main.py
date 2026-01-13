@@ -248,7 +248,7 @@ def init_database():
         )
     ''')
     
-    # CVEs main table
+        # CVEs main table - AJOUTEZ cvss_version
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS cves (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -256,6 +256,7 @@ def init_database():
             description TEXT,
             severity TEXT CHECK(severity IN ('CRITICAL', 'HIGH', 'MEDIUM', 'LOW')),
             cvss_score REAL,
+            cvss_version TEXT DEFAULT 'N/A',
             published_date TEXT,
             status TEXT DEFAULT 'PENDING' CHECK(status IN ('PENDING', 'ACCEPTED', 'REJECTED', 'DEFERRED')),
             analyst TEXT,
@@ -390,327 +391,586 @@ def init_database():
     except Exception:
         pass
 
+            # Ensure new columns exist for older DBs
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        # Check and add missing columns to cves table
+        cur.execute("PRAGMA table_info(cves)")
+        cols = {r[1] for r in cur.fetchall()}
+        if 'cvss_version' not in cols:
+            cur.execute('ALTER TABLE cves ADD COLUMN cvss_version TEXT DEFAULT "N/A"')
+        
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.warning(f"Error updating database schema: {e}")
+
 # ========== INTELLIGENT PRODUCT EXTRACTION ==========
 def extract_vendor_product_from_cpe(cpe_uri: str):
-    """Extract vendor and product from CPE URI"""
+    """Extract vendor and product from CPE URI avec plus de précision"""
     try:
         if not cpe_uri or not isinstance(cpe_uri, str):
             return None, None
-
-        # Common forms: cpe:2.3:<part>:<vendor>:<product>:...  OR cpe:/<part>:<vendor>:<product>
-        if cpe_uri.startswith('cpe:'):
+        
+        # Normaliser le CPE URI
+        cpe_uri = cpe_uri.strip()
+        
+        # Pattern complet pour CPE 2.3: cpe:2.3:a:microsoft:windows:10:*:*:*:*:*:*:*
+        if cpe_uri.startswith('cpe:2.3:'):
             parts = cpe_uri.split(':')
-            # cpe:2.3:a:vendor:product:...
-            if len(parts) >= 5:
+            if len(parts) >= 6:  # cpe:2.3:a:vendor:product:version:...
+                # Part type: a=application, o=OS, h=hardware
+                part_type = parts[2]
+                if part_type not in ['a', 'o', 'h']:
+                    return None, None
+                
                 vendor_raw = parts[3]
                 product_raw = parts[4]
-            elif len(parts) >= 4:
+                
+                # Valider les valeurs
+                if vendor_raw in ['-', '*', '', '~'] or product_raw in ['-', '*', '', '~']:
+                    return None, None
+                
+                # Nettoyer et formater
+                vendor = clean_cpe_value(vendor_raw)
+                product = clean_cpe_value(product_raw)
+                
+                # Vérifier que le produit a au moins 2 caractères
+                if len(product) < 2:
+                    return None, None
+                
+                return vendor, product
+        
+        # Pattern pour CPE 2.2: cpe:/a:microsoft:windows:10
+        elif cpe_uri.startswith('cpe:/'):
+            parts = cpe_uri.split(':')
+            if len(parts) >= 4:
                 vendor_raw = parts[2]
                 product_raw = parts[3]
-            else:
-                return None, None
-
-            vendor = re.sub(r'[^A-Za-z0-9\-_\. ]', ' ', vendor_raw).replace('_', ' ').strip()
-            product = re.sub(r'[^A-Za-z0-9\-_\. ]', ' ', product_raw).replace('_', ' ').strip()
-
-            if not vendor or vendor in ['-', '*', '', '~'] or not product or product in ['-', '*', '', '~']:
-                return None, None
-
-            return vendor.title(), product.title()
-
-        # Fallback: try to extract last two path segments
-        m = re.search(r'([^/]+)/([^/]+)$', cpe_uri)
-        if m:
-            vendor = m.group(1).replace('_', ' ').strip()
-            product = m.group(2).replace('_', ' ').strip()
-            return vendor.title(), product.title()
-    except Exception:
-        pass
+                
+                if vendor_raw in ['-', '*', '', '~'] or product_raw in ['-', '*', '', '~']:
+                    return None, None
+                
+                vendor = clean_cpe_value(vendor_raw)
+                product = clean_cpe_value(product_raw)
+                
+                if len(product) < 2:
+                    return None, None
+                
+                return vendor, product
+        
+        # Dernier recours: expression régulière
+        patterns = [
+            r'cpe:[^:]+:[^:]+:([^:]+):([^:]+)',
+            r'cpe:/[^:]+:([^:]+):([^:]+)',
+            r'([^/\s]+)\s*/\s*([^/\s]+)'
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, cpe_uri)
+            if match:
+                vendor = clean_cpe_value(match.group(1))
+                product = clean_cpe_value(match.group(2))
+                
+                if vendor and product and vendor not in ['-', '*', '~'] and product not in ['-', '*', '~']:
+                    return vendor, product
+        
+    except Exception as e:
+        logger.debug(f"Error extracting from CPE {cpe_uri[:50]}: {e}")
+    
     return None, None
 
+def clean_cpe_value(value: str) -> str:
+    """Nettoyer une valeur CPE"""
+    if not value:
+        return ""
+    
+    # Remplacer les underscores et caractères spéciaux
+    value = value.replace('_', ' ').replace('\\', '').strip()
+    
+    # Supprimer les caractères non alphanumériques (sauf espaces, tirets, points)
+    value = re.sub(r'[^\w\s\-\.]', ' ', value)
+    
+    # Supprimer les espaces multiples
+    value = re.sub(r'\s+', ' ', value)
+    
+    # Titre case sauf pour les acronymes connus
+    if value.isupper() or value.islower():
+        value = value.title()
+    
+    # Liste d'acronymes à garder en majuscules
+    acronyms = ['UI', 'API', 'CMS', 'LLM', 'IoT', 'PDF', 'SQL', 'SSL', 'TLS', 
+                'HTTP', 'HTTPS', 'SDK', 'IDE', 'CLI', 'GUI', 'OS', 'CPU', 'GPU',
+                'RAM', 'ROM', 'BIOS', 'UEFI', 'DNS', 'DHCP', 'FTP', 'SSH', 'VPN',
+                'JSON', 'XML', 'YAML', 'HTML', 'CSS', 'JS', 'PHP', 'ASP', 'JSP',
+                'REST', 'SOAP', 'API', 'AWS', 'GCP', 'Azure', 'IBM', 'SAP', 'CRM',
+                'ERP', 'CMS', 'CDN', 'DNS', 'IP', 'MAC', 'TCP', 'UDP', 'ICMP']
+    
+    for acronym in acronyms:
+        pattern = r'\b' + re.escape(acronym.lower()) + r'\b'
+        value = re.sub(pattern, acronym, value, flags=re.IGNORECASE)
+    
+    return value.strip()
+
 def is_valid_product_name(text: str) -> bool:
-    """Check if text looks like a valid product name"""
-    if not text or len(text) < 2:
+    """Vérifier si le texte ressemble à un nom de produit valide - version améliorée"""
+    if not text or len(text.strip()) < 2:
         return False
     
+    text = text.strip()
     text_lower = text.lower()
     
-    # Common words that are NOT product names
-    not_product_words = [
-        'the', 'a', 'an', 'in', 'of', 'for', 'and', 'or', 'but', 'with', 'from',
-        'to', 'by', 'on', 'at', 'as', 'is', 'was', 'are', 'were', 'be', 'been',
-        'being', 'have', 'has', 'had', 'do', 'does', 'did', 'can', 'could',
-        'will', 'would', 'shall', 'should', 'may', 'might', 'must', 'that',
-        'this', 'these', 'those', 'which', 'what', 'who', 'whom', 'whose',
-        'where', 'when', 'why', 'how', 'all', 'any', 'some', 'no', 'none',
-        'every', 'each', 'both', 'either', 'neither', 'such', 'same', 'other',
-        'another', 'only', 'very', 'just', 'also', 'even', 'still', 'already',
-        'yet', 'so', 'too', 'then', 'now', 'here', 'there', 'when', 'why',
-        'how', 'up', 'down', 'out', 'off', 'over', 'under', 'again', 'further',
-        'then', 'once', 'here', 'there', 'when', 'always', 'never', 'often',
-        'sometimes', 'usually', 'rarely', 'seldom', 'just', 'only', 'also',
-        'even', 'especially', 'particularly', 'specifically', 'generally',
-        'usually', 'normally', 'typically', 'commonly', 'frequently',
-        'occasionally', 'rarely', 'seldom', 'never', 'always', 'constantly',
-        'continuously', 'permanently', 'temporarily', 'briefly', 'suddenly',
-        'immediately', 'instantly', 'quickly', 'slowly', 'rapidly', 'gradually',
-        'eventually', 'finally', 'ultimately', 'initially', 'originally',
-        'previously', 'formerly', 'currently', 'presently', 'recently',
-        'lately', 'soon', 'later', 'earlier', 'before', 'after', 'during',
-        'while', 'since', 'until', 'till', 'because', 'although', 'though',
-        'unless', 'except', 'besides', 'despite', 'regardless', 'otherwise',
-        'therefore', 'thus', 'hence', 'consequently', 'accordingly',
-        'however', 'nevertheless', 'nonetheless', 'meanwhile', 'furthermore',
-        'moreover', 'besides', 'additionally', 'also', 'too', 'as well',
-        'instead', 'rather', 'alternatively', 'likewise', 'similarly',
-        'conversely', 'oppositely', 'contrarily', 'otherwise', 'else',
-        'somewhere', 'anywhere', 'everywhere', 'nowhere', 'somehow',
-        'anyhow', 'everyhow', 'nohow', 'somewhat', 'anywhat', 'everywhat',
-        'nowhat', 'someone', 'anyone', 'everyone', 'no one', 'something',
-        'anything', 'everything', 'nothing', 'somebody', 'anybody',
-        'everybody', 'nobody', 'somewhere', 'anywhere', 'everywhere',
-        'nowhere', 'sometime', 'anytime', 'every time', 'no time',
-        'somehow', 'anyhow', 'everyhow', 'nohow', 'somewhat', 'anywhat',
-        'everywhat', 'nowhat', 'someway', 'anyway', 'everyway', 'noway'
-    ]
+    # 1. Vérifier les longueurs
+    if len(text) > 80:  # Trop long pour un nom de produit
+        return False
     
-    # Check if text contains any of the not-product words
+    # 2. Liste de mots interdits (plus précise)
+    not_product_words = {
+        'vulnerability', 'vulnerable', 'security', 'flaw', 'issue', 'problem',
+        'bug', 'exploit', 'attack', 'threat', 'risk', 'allows', 'enables',
+        'permits', 'lets', 'could', 'would', 'might', 'may', 'can', 'should',
+        'this', 'that', 'these', 'those', 'which', 'what', 'when', 'where',
+        'why', 'how', 'there', 'here', 'thus', 'hence', 'therefore', 'however',
+        'although', 'because', 'since', 'while', 'during', 'before', 'after',
+        'through', 'until', 'unless', 'except', 'besides', 'despite', 'regardless'
+    }
+    
     words = text_lower.split()
     for word in words:
         if word in not_product_words:
             return False
     
-    # Check for common patterns that are NOT product names
-    bad_patterns = [
-        r'^[a-z]\s+',
-        r'\s+[a-z]\s+',
-        r'\b(?:vulnerability|vulnerable|security|flaw|issue|problem|bug|exploit|attack|threat|risk)\b',
-        r'\b(?:allows|enables|permits|lets|causes|leads|results|triggers)\b',
-        r'\b(?:before|after|during|when|while|since|until)\b',
-        r'\b(?:version|v\d+|\.\d+|\d+\.\d+)\b',
-        r'\b(?:up to|through|before|after|from|to)\b',
+    # 3. Vérifier les patterns non-valides
+    invalid_patterns = [
+        r'^\d+$',  # Uniquement des chiffres
+        r'^[a-z]\s*$',  # Une seule lettre
+        r'\b(vuln|cve|cpe|id|ref|refs)\b',  # Termes techniques
+        r'^.*\b(?:allows|enables|permits)\b.*$',  # Contient des verbes d'action
+        r'^.*\b(?:before|after|when|while)\b.*$',  # Contient des mots temporels
     ]
     
-    for pattern in bad_patterns:
-        if re.search(pattern, text_lower):
+    for pattern in invalid_patterns:
+        if re.match(pattern, text_lower):
             return False
     
-    # Check for product-like patterns
-    good_patterns = [
-        r'^[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*$',  # Capitalized words
-        r'\b(?:UI|API|CMS|LLM|IoT|PDF|SQL|SSL|TLS|HTTP|HTTPS|HCI|SDK|IDE|CLI|GUI)\b',
-        r'\b(?:Windows|Linux|Apache|WordPress|Java|Python|Ruby|Go|Rust|MySQL|PostgreSQL)\b',
-        r'\b(?:Chrome|Firefox|Safari|Edge|Android|iOS|macOS|Windows)\b',
-        r'\b(?:Docker|Kubernetes|Node\.js|React|Angular|Vue|Nginx|IIS)\b',
-        r'^[A-Za-z]+(?:-[A-Za-z]+)+$',  # Hyphenated names
+    # 4. Vérifier les patterns valides (signes d'un vrai produit)
+    valid_patterns = [
+        r'^[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*$',  # Mots capitalisés
+        r'^[A-Z]+(?:\s+[A-Z]+)*$',  # Tous majuscules (acronymes)
+        r'^[A-Z][a-z]+\d+$',  # Nom suivi de chiffres (Product2023)
+        r'^\w+-\w+$',  # Avec tiret
+        r'^\w+\.\w+$',  # Avec point
+        r'\b(?:Pro|Enterprise|Business|Standard|Professional|Ultimate)\b',
+        r'\b(?:Server|Client|Desktop|Mobile|Cloud|Web)\b',
+        r'\b(?:Studio|Suite|Pack|Bundle|Edition|Version)\b',
     ]
     
-    for pattern in good_patterns:
-        if re.search(pattern, text, re.IGNORECASE):
+    for pattern in valid_patterns:
+        if re.match(pattern, text):
             return True
     
-    # Minimum length and character requirements
-    if len(text) < 3 or len(text) > 50:
-        return False
+    # 5. Vérifier la présence de marques connues
+    known_product_indicators = [
+        'Windows', 'Linux', 'Android', 'iOS', 'macOS', 'Chrome', 'Firefox',
+        'WordPress', 'Apache', 'Nginx', 'MySQL', 'PostgreSQL', 'MongoDB',
+        'Docker', 'Kubernetes', 'Java', 'Python', 'PHP', 'Ruby', 'Node',
+        'React', 'Angular', 'Vue', 'Django', 'Flask', 'Spring', '.NET'
+    ]
     
-    # Should contain at least one letter
+    for indicator in known_product_indicators:
+        if indicator.lower() in text_lower:
+            return True
+    
+    # 6. Vérifier la composition du texte
+    # Doit contenir au moins une lettre
     if not re.search(r'[A-Za-z]', text):
         return False
     
+    # Doit contenir principalement des caractères alphanumériques
+    alpha_ratio = sum(1 for c in text if c.isalnum()) / len(text)
+    if alpha_ratio < 0.6:  # Trop de caractères spéciaux
+        return False
+    
     return True
-
 def extract_product_from_description(description: str) -> tuple:
     """
-    Intelligently extract vendor and product from description
-    Returns: (vendor, product) or (None, None)
+    Intelligently extract vendor and product from description with improved accuracy
     """
     if not description:
         return None, None
     
-    # Common vendor-product mappings
+    description_lower = description.lower()
+    
+    # 1. DICTIONNAIRE ÉTENDU DE PRODUITS CONNUS
     vendor_product_map = {
-        'wordpress': ('WordPress', 'Plugin'),
-        'apache': ('Apache', 'HTTP Server'),
-        'linux': ('Linux', 'Kernel'),
-        'windows': ('Microsoft', 'Windows'),
+        # Microsoft
+        'microsoft windows': ('Microsoft', 'Windows'),
+        'windows server': ('Microsoft', 'Windows Server'),
+        'microsoft office': ('Microsoft', 'Office'),
+        'microsoft excel': ('Microsoft', 'Excel'),
+        'microsoft word': ('Microsoft', 'Word'),
+        'microsoft outlook': ('Microsoft', 'Outlook'),
+        'microsoft edge': ('Microsoft', 'Edge'),
+        'internet explorer': ('Microsoft', 'Internet Explorer'),
+        '.net framework': ('Microsoft', '.NET Framework'),
+        'microsoft azure': ('Microsoft', 'Azure'),
+        
+        # Google
+        'google chrome': ('Google', 'Chrome'),
         'android': ('Google', 'Android'),
-        'ios': ('Apple', 'iOS'),
+        'google play': ('Google', 'Play Store'),
+        'google drive': ('Google', 'Drive'),
+        'google docs': ('Google', 'Docs'),
+        
+        # Apple
         'macos': ('Apple', 'macOS'),
-        'java': ('Oracle', 'Java'),
-        'python': ('Python', 'Software'),
-        'docker': ('Docker', 'Engine'),
-        'kubernetes': ('Kubernetes', 'Cluster'),
+        'mac os': ('Apple', 'macOS'),
+        'ios': ('Apple', 'iOS'),
+        'iphone os': ('Apple', 'iOS'),
+        'safari': ('Apple', 'Safari'),
+        
+        # Adobe
+        'adobe reader': ('Adobe', 'Acrobat Reader'),
+        'adobe acrobat': ('Adobe', 'Acrobat'),
+        'adobe flash': ('Adobe', 'Flash Player'),
+        'adobe photoshop': ('Adobe', 'Photoshop'),
+        
+        # Linux/Open Source
+        'linux kernel': ('Linux', 'Kernel'),
+        'ubuntu': ('Canonical', 'Ubuntu'),
+        'debian': ('Debian', 'Linux'),
+        'red hat': ('Red Hat', 'Enterprise Linux'),
+        'centos': ('CentOS', 'Linux'),
+        'fedora': ('Fedora', 'Linux'),
+        
+        # Web Servers
+        'apache http server': ('Apache', 'HTTP Server'),
+        'apache tomcat': ('Apache', 'Tomcat'),
         'nginx': ('Nginx', 'Web Server'),
+        'iis': ('Microsoft', 'Internet Information Services'),
+        
+        # Databases
         'mysql': ('Oracle', 'MySQL'),
         'postgresql': ('PostgreSQL', 'Database'),
         'mongodb': ('MongoDB', 'Database'),
-        'redis': ('Redis', 'Database'),
+        'oracle database': ('Oracle', 'Database'),
+        'microsoft sql server': ('Microsoft', 'SQL Server'),
+        # Siemens Industrial
+    'simatic et 200al': ('Siemens', 'SIMATIC ET 200AL'),
+    'simatic et 200mp': ('Siemens', 'SIMATIC ET 200MP'),
+    'simatic et 200sp': ('Siemens', 'SIMATIC ET 200SP'),
+    'telecontrol server basic': ('Siemens', 'TeleControl Server Basic'),
+    'simatic': ('Siemens', 'SIMATIC Industrial Control'),
+    'siemens': ('Siemens', 'Industrial Products'),
+    
+    # Hikvision
+    'hikvision': ('Hikvision', 'Surveillance Products'),
+    'hikvision nvr': ('Hikvision', 'NVR'),
+    'hikvision dvr': ('Hikvision', 'DVR'),
+    'hikvision cvr': ('Hikvision', 'CVR'),
+    'hikvision ipc': ('Hikvision', 'IP Camera'),
+    'hikvision access control': ('Hikvision', 'Access Control'),
+    
+    # SAP
+    'sap business connector': ('SAP', 'Business Connector'),
+    'sap supplier relationship management': ('SAP', 'Supplier Relationship Management'),
+    'sap fiori': ('SAP', 'Fiori'),
+    'sap s/4hana': ('SAP', 'S/4HANA'),
+    'sap netweaver': ('SAP', 'NetWeaver'),
+    'sap hana': ('SAP', 'HANA Database'),
+    'sap erp': ('SAP', 'ERP'),
+    'sap ecc': ('SAP', 'ERP Central Component'),
+    
+    # WordPress
+    'wordpress plugin': ('WordPress', 'Plugin'),
+    'wordpress theme': ('WordPress', 'Theme'),
+    'woocommerce': ('WooCommerce', 'E-commerce Plugin'),
+    'exact hosted payment': ('E-xact', 'Hosted Payment Plugin'),
+    'dreamer blog': ('Dreamer Blog', 'WordPress Theme'),
+    
+    # Autres
+    'oracle java': ('Oracle', 'Java'),
+    'java network launch protocol': ('Oracle', 'Java'),
+    'jnlp': ('Oracle', 'Java Network Launch Protocol'),
+        
+        # Programming Languages/Frameworks
         'node.js': ('Node.js', 'Runtime'),
+        'python': ('Python', 'Programming Language'),
+        'java': ('Oracle', 'Java'),
+        'php': ('PHP', 'Programming Language'),
+        'ruby on rails': ('Ruby', 'Rails Framework'),
+        'django': ('Django', 'Web Framework'),
         'react': ('Facebook', 'React'),
         'angular': ('Google', 'Angular'),
-        'vue': ('Vue.js', 'Framework'),
-        'rustcrypto': ('RustCrypto', 'Elliptic Curves'),
-        'rustcrypto: elliptic curves': ('RustCrypto', 'Elliptic Curves'),
-        'aws sdk': ('Amazon', 'AWS SDK for .NET'),
-        'aws sdk for .net': ('Amazon', 'AWS SDK for .NET'),
+        'vue.js': ('Vue.js', 'Framework'),
+        
+        # WordPress
+        'wordpress': ('WordPress', 'CMS'),
+        'wordpress plugin': ('WordPress', 'Plugin'),
+        'woocommerce': ('WooCommerce', 'E-commerce'),
+        
+        # Cloud/Containers
+        'docker': ('Docker', 'Container Platform'),
+        'kubernetes': ('Kubernetes', 'Container Orchestrator'),
+        'aws': ('Amazon', 'AWS'),
+        'amazon web services': ('Amazon', 'AWS'),
+        'google cloud': ('Google', 'Cloud Platform'),
+        
+        # Network Equipment
+        'cisco ios': ('Cisco', 'IOS'),
+        'cisco asa': ('Cisco', 'ASA'),
+        'fortinet fortios': ('Fortinet', 'FortiOS'),
+        'palo alto networks': ('Palo Alto Networks', 'PAN-OS'),
+        
+        # Security Products
+        'mcafee': ('McAfee', 'Security Software'),
+        'symantec': ('Symantec', 'Security Software'),
+        'kaspersky': ('Kaspersky', 'Security Software'),
+        'bitdefender': ('Bitdefender', 'Security Software'),
     }
     
-    # Check for known software in description
-    description_lower = description.lower()
+    # Vérifier les correspondances exactes d'abord
     for keyword, (vendor, product) in vendor_product_map.items():
         if keyword in description_lower:
             return vendor, product
     
-    # Pattern 1: Look for "in [software]" pattern
-    pattern1 = r'\bin\s+([A-Z][A-Za-z0-9\s&\.\-]+?)\s+(?:before|through|up\s+to|version|v\d+|\.\d+|plugin|extension|tool|framework|library|system|software|application)'
-    match1 = re.search(pattern1, description, re.IGNORECASE)
-    if match1:
-        software = match1.group(1).strip()
-        if is_valid_product_name(software):
-            # Try to split into vendor and product
-            words = software.split()
-            if len(words) >= 2:
-                vendor = words[0]
-                product = ' '.join(words[1:])
-            else:
-                vendor = "Unknown"
-                product = software
-            return vendor, product
-
-    # New Pattern: Look for 'Vendor: Product' or 'Vendor - Product' style mentions
-    pattern_vp = r'([A-Za-z0-9& ]{2,60})\s*[:\-]\s*([A-Za-z0-9&\.\- ]{2,80})'
-    match_vp = re.search(pattern_vp, description)
-    if match_vp:
-        vendor_candidate = match_vp.group(1).strip()
-        product_candidate = match_vp.group(2).strip()
-        # Filter out cases where left side is generic words and ensure product_candidate looks like a product
-        if is_valid_product_name(product_candidate) and not re.search(r'\b(issue|vulnerability|vulnerable|attack|exploit|CVE|CPE|this|that|there)\b', vendor_candidate, re.IGNORECASE):
-            vendor_lower = vendor_candidate.lower()
-            # If vendor part matches a known mapping, use mapping
-            if vendor_lower in vendor_product_map:
-                return vendor_product_map[vendor_lower]
-            # If product_candidate looks like a sentence (has verbs), reject
-            if re.search(r'\b(allows|enables|introduces|causes|leads|results|allows)\b', product_candidate, re.IGNORECASE):
-                pass
-            else:
-                return vendor_candidate, product_candidate
-    
-    # Pattern 2: Look for "[software] plugin/extension/tool"
-    pattern2 = r'\b([A-Z][A-Za-z0-9\s&\.\-]+?)\s+(?:plugin|extension|tool|framework|library|system|software|application|driver|module|package|component)'
-    match2 = re.search(pattern2, description, re.IGNORECASE)
-    if match2:
-        software = match2.group(1).strip()
-        if is_valid_product_name(software):
-            words = software.split()
-            if len(words) >= 2:
-                vendor = words[0]
-                product = ' '.join(words[1:])
-            else:
-                vendor = "Unknown"
-                product = software
-            return vendor, product
-    
-    # Pattern 3: Look for specific product mentions
-    products_to_find = [
-        'QuestDB', 'QuickJS', 'LIEF', 'NimBLE', 'Sangfor', 'HAX', 'ComfyUI',
-        'vLLM', 'Cosign', 'virtualenv', 'HarfBuzz', 'filelock', 'DevToys',
-        'Mailpit', 'pypdf', 'XWiki', 'WeKnora', 'Spree', 'Angular', 'October',
-        'Ghost', 'React Router', 'WooCommerce'
+    # 2. PATTERNS AMÉLIORÉS POUR L'EXTRACTION
+    patterns = [
+        # Pattern: "in [Vendor] [Product]" 
+        (r'\b(?:in|of|for|on|in the)\s+([A-Z][A-Za-z0-9&\.\-]+\s+[A-Za-z0-9&\.\-]+)\s+(?:software|application|system|tool|framework|library|plugin|extension|driver|component|module|package|service)', 1),
+        
+        # Pattern: "[Vendor]'s [Product]"
+        (r'([A-Z][A-Za-z0-9&\.\-]+)\'s\s+([A-Za-z0-9&\.\-]+(?:\s+[A-Za-z0-9&\.\-]+)*)', (1, 2)),
+        
+        # Pattern: "[Vendor] [Product] [version]" 
+        (r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s+([A-Z][A-Za-z0-9]+(?:\s+[A-Za-z0-9]+)*)\s+(?:v\d+|version\s+\d+|release\s+\d+)', (1, 2)),
+        
+        # Pattern: "the [Product] [component] in [Vendor]"
+        (r'the\s+([A-Z][A-Za-z0-9&\.\-]+)\s+(?:component|feature|module|plugin)\s+(?:in|of)\s+([A-Z][A-Za-z0-9&\.\-]+)', (2, 1)),
+        
+        # Pattern: "[Product] from [Vendor]"
+        (r'([A-Z][A-Za-z0-9&\.\-]+(?:\s+[A-Za-z0-9&\.\-]+)*)\s+from\s+([A-Z][A-Za-z0-9&\.\-]+)', (2, 1)),
+        
+        # Pattern: CVE style: "Vendor:Product:Version"
+        (r'([A-Za-z0-9]+)\s*:\s*([A-Za-z0-9]+)', (1, 2)),
     ]
     
-    for product_name in products_to_find:
-        if product_name.lower() in description_lower:
-            # Try to determine vendor
-            vendor = "Unknown"
-            if product_name == 'QuestDB':
-                vendor = 'QuestDB'
-            elif product_name == 'QuickJS':
-                vendor = 'QuickJS'
-            elif product_name == 'LIEF':
-                vendor = 'LIEF Project'
-            elif product_name == 'NimBLE':
-                vendor = 'Apache'
-            elif product_name == 'Sangfor':
-                vendor = 'Sangfor'
-            elif product_name == 'HAX':
-                vendor = 'HAX'
-            elif product_name == 'ComfyUI':
-                vendor = 'ComfyUI'
-            elif product_name == 'vLLM':
-                vendor = 'vLLM'
-            elif product_name == 'Cosign':
-                vendor = 'Sigstore'
-            elif product_name == 'virtualenv':
-                vendor = 'Python'
-            elif product_name == 'HarfBuzz':
-                vendor = 'HarfBuzz'
-            elif product_name == 'filelock':
-                vendor = 'Python'
-            elif product_name == 'DevToys':
-                vendor = 'DevToys'
-            elif product_name == 'Mailpit':
-                vendor = 'Mailpit'
-            elif product_name == 'pypdf':
-                vendor = 'PyPDF'
-            elif product_name == 'XWiki':
-                vendor = 'XWiki'
-            elif product_name == 'WeKnora':
-                vendor = 'Tencent'
-            elif product_name == 'Spree':
-                vendor = 'Spree Commerce'
-            elif product_name == 'Angular':
-                vendor = 'Google'
-            elif product_name == 'October':
-                vendor = 'OctoberCMS'
-            elif product_name == 'Ghost':
-                vendor = 'Ghost'
-            elif product_name == 'React Router':
-                vendor = 'React Router'
-            elif product_name == 'WooCommerce':
-                vendor = 'WooCommerce'
+    for pattern, groups in patterns:
+        match = re.search(pattern, description, re.IGNORECASE)
+        if match:
+            if isinstance(groups, tuple):
+                vendor_idx, product_idx = groups
+                vendor = match.group(vendor_idx).strip()
+                product = match.group(product_idx).strip()
+            else:
+                full_match = match.group(groups).strip()
+                # Essayer de séparer vendor et product
+                parts = full_match.split()
+                if len(parts) >= 2:
+                    vendor = parts[0]
+                    product = ' '.join(parts[1:])
+                else:
+                    vendor = "Unknown"
+                    product = full_match
             
-            return vendor, product_name
+            # Valider l'extraction
+            if is_valid_product_extraction(vendor, product):
+                return clean_extracted_names(vendor, product)
+    
+    # 3. FALLBACK: Rechercher des marques connues
+    known_vendors = ['Microsoft', 'Google', 'Apple', 'Adobe', 'Oracle', 'IBM', 
+                     'Cisco', 'Intel', 'AMD', 'NVIDIA', 'Dell', 'HP', 'Lenovo',
+                     'VMware', 'Red Hat', 'Canonical', 'Apache', 'Mozilla',
+                     'Facebook', 'Twitter', 'LinkedIn', 'Salesforce', 'SAP','Siemens','Hikvision','WordPress']
+    
+    for vendor in known_vendors:
+        if vendor.lower() in description_lower:
+            # Chercher un produit associé
+            product_pattern = rf'{re.escape(vendor)}\s+([A-Z][A-Za-z0-9\s&\.\-]+)'
+            product_match = re.search(product_pattern, description, re.IGNORECASE)
+            if product_match:
+                product = product_match.group(1).strip()
+                if is_valid_product_name(product):
+                    return vendor, clean_product_name(product)
+            else:
+                # Juste le vendeur
+                return vendor, "Various Products"
     
     return None, None
+def extract_product_from_description_improved(description: str) -> tuple:
+    """Version améliorée avec reconnaissance spécifique des patterns industriels"""
+    if not description:
+        return None, None
+    
+    # NE PAS tronquer la description ici - c'est le travail d'une autre fonction
+    description_lower = description.lower()
+    
+    # 1. Reconnaissance des produits Siemens (patterns exacts)
+    siemens_patterns = [
+        (r'SIMATIC ET 200AL IM 157-1 PN', ('Siemens', 'SIMATIC ET 200AL')),
+        (r'SIMATIC ET 200MP IM 155-5 PN HF', ('Siemens', 'SIMATIC ET 200MP')),
+        (r'SIMATIC ET 200SP IM 155-6 MF HF', ('Siemens', 'SIMATIC ET 200SP')),
+        (r'SIMATIC ET 200SP IM 155-6 PN HA', ('Siemens', 'SIMATIC ET 200SP')),
+        (r'TeleControl Server Basic', ('Siemens', 'TeleControl Server Basic')),
+        (r'Cert Portal\.Siemens', ('Siemens', 'Product Certification')),
+    ]
+    
+    for pattern, (vendor, product) in siemens_patterns:
+        if re.search(pattern, description, re.IGNORECASE):
+            return vendor, product
+    
+    # 2. Reconnaissance SAP (plus spécifique)
+    sap_patterns = [
+        (r'SAP (Business Connector)', ('SAP', 'Business Connector')),
+        (r'SAP (Supplier Relationship Management)', ('SAP', 'Supplier Relationship Management')),
+        (r'SAP (Fiori App Intercompany Balance Reconciliation)', ('SAP', 'Fiori App Intercompany Balance Reconciliation')),
+        (r'SAP (S/4HANA)', ('SAP', 'S/4HANA')),
+        (r'SAP (NetWeaver [A-Za-z ]+)', ('SAP', r'\1')),
+        (r'SAP (HANA [Dd]atabase)', ('SAP', 'HANA Database')),
+        (r'SAP (ERP [Cc]entral [Cc]omponent)', ('SAP', 'ERP Central Component')),
+        (r'SAP (Application Server for ABAP)', ('SAP', 'Application Server for ABAP')),
+        (r'Application Server (ABAP)', ('SAP', 'Application Server ABAP')),
+        (r'SAP (Wily Introscope [A-Za-z ]+)', ('SAP', r'\1')),
+        (r'SAP (Landscape Transformation)', ('SAP', 'Landscape Transformation')),
+        (r'SAP (Product Designer [A-Za-z ]+)', ('SAP', 'Product Designer')),
+    ]
+    
+    for pattern, (vendor, product_template) in sap_patterns:
+        match = re.search(pattern, description, re.IGNORECASE)
+        if match:
+            if isinstance(product_template, str) and '\\1' in product_template:
+                product = match.expand(product_template)
+            else:
+                product = product_template
+            return vendor, product
+    
+    # 3. Reconnaissance ABAP spécifique
+    if re.search(r'\bABAP\b', description, re.IGNORECASE):
+        if re.search(r'\bSAP\b', description, re.IGNORECASE) or re.search(r'Application Server', description, re.IGNORECASE):
+            return ('SAP', 'ABAP Platform')
+    
+    # 4. Reconnaissance WordPress (plus spécifique)
+    if 'wordpress' in description_lower:
+        if 'plugin' in description_lower:
+            # Essayer d'extraire le nom du plugin
+            plugin_match = re.search(r'The ([A-Za-z0-9\s&|\-]+) WordPress plugin', description, re.IGNORECASE)
+            if plugin_match:
+                plugin_name = plugin_match.group(1).strip()
+                return ('WordPress', f'{plugin_name} Plugin')
+            return ('WordPress', 'Plugin')
+        elif 'theme' in description_lower:
+            theme_match = re.search(r'The ([A-Za-z0-9\s&|\-]+) WordPress theme', description, re.IGNORECASE)
+            if theme_match:
+                theme_name = theme_match.group(1).strip()
+                return ('WordPress', f'{theme_name} Theme')
+            return ('WordPress', 'Theme')
+        return ('WordPress', 'CMS')
+    
+    # 5. Reconnaissance Hikvision
+    if 'hikvision' in description_lower:
+        if 'nvr' in description_lower or 'dvr' in description_lower or 'cvr' in description_lower or 'ipc' in description_lower:
+            return ('Hikvision', 'NVR/DVR/CVR/IPC')
+        elif 'access control' in description_lower:
+            return ('Hikvision', 'Access Control Products')
+        return ('Hikvision', 'Surveillance Products')
+    
+    # 6. Reconnaissance Oracle/Java
+    if 'java network launch protocol' in description_lower or 'jnlp' in description_lower:
+        return ('Oracle', 'Java Network Launch Protocol')
+    elif 'oracle java' in description_lower or ('java' in description_lower and 'oracle' in description_lower):
+        return ('Oracle', 'Java')
+    
+    # 7. Reconnaissance langages/frameworks spécifiques
+    lang_patterns = [
+        (r'\bLIBPNG\b', ('LIBPNG', 'PNG Library')),
+        (r'\bRIOT OS\b', ('RIOT', 'Operating System')),
+        (r'\bTinyOS\b', ('TinyOS', 'Operating System')),
+        (r'\bOllama\b', ('Ollama', 'AI Framework')),
+        (r'\bLangChain\b', ('LangChain', 'AI Framework')),
+        (r'\bLlamaIndex\b', ('LlamaIndex', 'AI Framework')),
+        (r'\bEmlog\b', ('Emlog', 'CMS')),
+        (r'\bAppsmith\b', ('Appsmith', 'Dashboard Platform')),
+        (r'\bTermix\b', ('Termix', 'Server Management Platform')),
+        (r'\bOpenCode\b', ('OpenCode', 'AI Coding Agent')),
+        (r'\bhermes\b', ('Hermes', 'Workflow Automation')),
+        (r'\bWebErpMesv2\b', ('WebErpMes', 'ERP System')),
+    ]
+    
+    for pattern, (vendor, product) in lang_patterns:
+        if re.search(pattern, description, re.IGNORECASE):
+            return vendor, product
+    
+    # 8. Fallback à l'ancienne méthode
+    return extract_product_from_description(description)
+
+def clean_extracted_names(vendor: str, product: str) -> tuple:
+    """Nettoyer les noms extraits"""
+    # Nettoyer le vendor
+    vendor = re.sub(r'\s+(?:corporation|corp|inc|llc|ltd|gmbh|s\.a\.?|s\.p\.a\.?)$', '', vendor, flags=re.IGNORECASE)
+    vendor = vendor.strip()
+    
+    # Nettoyer le produit
+    product = re.sub(r'\s+(?:software|application|system|tool|framework|library|version|v\d+|\.\d+).*$', '', product, flags=re.IGNORECASE)
+    product = product.strip()
+    
+    # Formater
+    if vendor and not vendor[0].isupper():
+        vendor = vendor.title()
+    
+    if product and not product[0].isupper():
+        product = product.title()
+    
+    return vendor, product
 
 def clean_vendor_product(vendor: str, product: str) -> tuple:
-    """Clean and format vendor and product names"""
+    """Clean and format vendor and product names with better preservation"""
     if not vendor or vendor.lower() == 'unknown':
         vendor = "Unknown"
     
     if not product or product.lower() == 'unknown':
         product = "Multiple Products"
     
+    # NE PAS formater les noms industriels qui ont une casse spécifique
+    is_industrial_name = any(pattern in product.upper() for pattern in 
+                           ['SIMATIC', 'IM ', 'PN ', 'HF ', 'HA ', 'MF ', 'SIPLUS',
+                            'ET 200', 'ABAP', 'HANA', 'S/4HANA', 'ECC', 'ERP'])
+    
     # Remove version numbers and common suffixes from product
-    product = re.sub(r'\s+v\d+\.?\d*.*$', '', product, flags=re.IGNORECASE)
-    product = re.sub(r'\s+\d+\.\d+.*$', '', product)
-    product = re.sub(r'\s+(?:before|through|up\s+to|version|vulnerability|vulnerable|allows|enables|plugin|extension|tool|framework|library|system|software|application|driver|component|feature|module|package).*$', '', product, flags=re.IGNORECASE)
+    if not is_industrial_name:
+        product = re.sub(r'\s+v\d+\.?\d*.*$', '', product, flags=re.IGNORECASE)
+        product = re.sub(r'\s+\d+\.\d+.*$', '', product)
+        product = re.sub(r'\s+(?:before|through|up\s+to|version|vulnerability|vulnerable|allows|enables|plugin|extension|tool|framework|library|system|software|application|driver|component|feature|module|package).*$', '', product, flags=re.IGNORECASE)
     
     # Clean up whitespace
     vendor = re.sub(r'\s+', ' ', vendor).strip()
     product = re.sub(r'\s+', ' ', product).strip()
     
-    # Format vendor
+    # Format vendor (toujours en format propre)
     if vendor and vendor != "Unknown":
+        # Nettoyer les suffixes corporatifs
+        vendor = re.sub(r'\s+(?:corporation|corp|inc|llc|ltd|gmbh|s\.a\.?|s\.p\.a\.?)$', '', vendor, flags=re.IGNORECASE)
+        # Formater proprement
         if vendor.isupper() or vendor.islower():
             vendor = vendor.title()
-        if vendor.lower() == 'the':
-            vendor = "Unknown"
     
-    # Format product
-    if product and product != "Multiple Products":
+    # Format product (seulement si pas industriel)
+    if product and product != "Multiple Products" and not is_industrial_name:
         if product.isupper() or product.islower():
             product = product.title()
         
         # Handle special cases
-        if product.lower() == 'ui':
-            product = 'UI'
-        elif product.lower() == 'api':
-            product = 'API'
-        elif product.lower() == 'cms':
-            product = 'CMS'
-        elif product.lower() == 'llm':
-            product = 'LLM'
+        special_cases = {
+            'ui': 'UI', 'api': 'API', 'cms': 'CMS', 'llm': 'LLM',
+            'abap': 'ABAP', 'hana': 'HANA', 'ecc': 'ECC', 'erp': 'ERP',
+            'sap': 'SAP'
+        }
+        
+        for lowercase, proper in special_cases.items():
+            if product.lower() == lowercase:
+                product = proper
+                break
         
         # Shorten if too long
         if len(product) > 40:
@@ -718,75 +978,219 @@ def clean_vendor_product(vendor: str, product: str) -> tuple:
     
     return vendor, product
 
-def get_products_for_cve(cve_data: Dict) -> List[Dict[str, str]]:
+def get_products_for_cve(cve_data: Dict) -> List[Dict[str, Any]]:
     """
-    Extract a list of affected products (vendor/product) from CVE data.
-    Prioritizes CPE data (walks nodes recursively) and falls back to description.
-    Returns list of unique {'vendor':..., 'product':...} dicts.
+    Extract a list of affected products with improved accuracy and confidence scoring
     """
-    products = set()
-
-    def walk_nodes(nodes):
+    products_dict = {}
+    
+    def walk_nodes_with_confidence(nodes, parent_confidence=1.0):
         for node in nodes:
-            # cpeMatch entries
-            for match in node.get('cpeMatch', []) or []:
-                uri = match.get('cpe23Uri') or match.get('criteria') or match.get('criteria')
+            node_confidence = parent_confidence * 0.9 if parent_confidence < 1.0 else 1.0
+            
+            for match in node.get('cpeMatch', []):
+                uri = match.get('cpe23Uri') or match.get('criteria')
                 if uri:
                     vendor, product = extract_vendor_product_from_cpe(uri)
                     if vendor and product:
                         vendor, product = clean_vendor_product(vendor, product)
                         if product and product != 'Multiple Products':
-                            products.add((vendor, product))
-
-            # sometimes node itself has a criteria
-            crit = node.get('criteria')
-            if crit and (crit.startswith('cpe:') or 'cpe:' in crit):
-                vendor, product = extract_vendor_product_from_cpe(crit)
-                if vendor and product:
-                    vendor, product = clean_vendor_product(vendor, product)
-                    if product and product != 'Multiple Products':
-                        products.add((vendor, product))
-
-            # recurse children
+                            cpe_confidence = node_confidence * 1.0
+                            key = f"{vendor.lower()}|{product.lower()}"
+                            if key not in products_dict or cpe_confidence > products_dict[key]['confidence']:
+                                products_dict[key] = {
+                                    'vendor': vendor,
+                                    'product': product,
+                                    'confidence': cpe_confidence,
+                                    'source': 'cpe'
+                                }
+            
             children = node.get('children', [])
             if children:
-                walk_nodes(children)
-
-    # Extract from configurations
+                walk_nodes_with_confidence(children, node_confidence * 0.8)
+    
+    # 1. Extraction depuis les CPEs
     configurations = cve_data.get('configurations', []) or []
     for config in configurations:
         nodes = config.get('nodes', []) or []
-        walk_nodes(nodes)
-
-    # If none found, try description-based heuristic (single fallback)
-    if not products:
-        description = ""
-        for desc in cve_data.get('descriptions', []) or []:
-            if desc.get('lang') == 'en':
-                description = desc.get('value', '')
-                break
-
-        if description:
+        walk_nodes_with_confidence(nodes)
+    
+    # 2. Extraction depuis la description (TOUJOURS essayer, pas seulement si < 2 CPEs)
+    description = ""
+    for desc in cve_data.get('descriptions', []) or []:
+        if desc.get('lang') == 'en':
+            description = desc.get('value', '')
+            break
+    
+    if description:
+        # Essayer d'abord la méthode améliorée
+        vendor, product = extract_product_from_description_improved(description)
+        
+        # Si pas trouvé ou trop générique, essayer l'ancienne méthode
+        if not vendor or not product or product in ['Multiple Products', 'Various Products']:
             vendor, product = extract_product_from_description(description)
-            # be stricter: only accept if product looks like a valid product name
-            if vendor and product and is_valid_product_name(product):
-                vendor, product = clean_vendor_product(vendor, product)
-                if product and product != 'Multiple Products':
-                    products.add((vendor, product))
+        
+        if vendor and product:
+            vendor, product = clean_vendor_product(vendor, product)
+            if product and product != 'Multiple Products':
+                key = f"{vendor.lower()}|{product.lower()}"
+                # Donner une confiance plus élevée si trouvé par la méthode améliorée
+                confidence = 0.8 if vendor != 'Unknown' else 0.5
+                if key not in products_dict:
+                    products_dict[key] = {
+                        'vendor': vendor,
+                        'product': product,
+                        'confidence': confidence,
+                        'source': 'description'
+                    }
+                elif confidence > products_dict[key]['confidence']:
+                    products_dict[key]['confidence'] = confidence
+                    products_dict[key]['source'] = 'description_improved'
+    
+    # 3. Si toujours rien, chercher dans les références
+    if not products_dict:
+        references = cve_data.get('references', []) or []
+        for ref in references:
+            url = ref.get('url', '')
+            if url:
+                vendor_product = extract_from_reference_url(url)
+                if vendor_product:
+                    vendor, product = vendor_product
+                    key = f"{vendor.lower()}|{product.lower()}"
+                    products_dict[key] = {
+                        'vendor': vendor,
+                        'product': product,
+                        'confidence': 0.6,
+                        'source': 'reference'
+                    }
+    
+    # 4. Final fallback
+    if not products_dict:
+        products_dict['unknown|multiple'] = {
+            'vendor': 'Unknown',
+            'product': 'Multiple Products',
+            'confidence': 0.1,
+            'source': 'fallback'
+        }
+    
+    # Trier par confidence
+    sorted_products = sorted(products_dict.values(), key=lambda x: x['confidence'], reverse=True)
+    
+    # Limiter à 3 produits maximum pour éviter le bruit
+    return sorted_products[:3]
 
-    # Final fallback to Unknown if still empty
-    if not products:
-        products.add(('Unknown', 'Multiple Products'))
-
-    result = []
-    # Assign a simple confidence score heuristic: prefer CPE matches (1.0), description matches (0.6)
-    for v, p in products:
-        confidence = 0.5
-        # Heuristic: if vendor not Unknown and product not 'Multiple Products'
-        if v and v != 'Unknown' and p and p != 'Multiple Products':
-            confidence = 1.0
-        result.append({'vendor': v, 'product': p, 'confidence': confidence})
-    return result
+def extract_from_reference_url(url: str):
+    """Extraire vendor/product depuis les URLs de référence"""
+    try:
+        # Patterns communs dans les URLs
+        patterns = [
+            r'github\.com/([^/]+)/([^/]+)',
+            r'([^/]+)\.com/([^/]+)',
+            r'/([^/]+)-([^/]+)-',
+            r'product=([^&]+).*vendor=([^&]+)',
+            r'vendor=([^&]+).*product=([^&]+)'
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, url, re.IGNORECASE)
+            if match:
+                vendor = match.group(1).replace('-', ' ').title()
+                product = match.group(2).replace('-', ' ').title()
+                
+                if is_valid_product_name(product):
+                    return vendor, product
+    except:
+        pass
+    return None
+    # ========== FONCTION UTILITAIRE CVSS ==========
+def extract_cvss_metrics(cve_data):
+    """
+    Extract CVSS metrics with priority: 4.0 > 4.1 > 3.1 > 3.0 > 2.0
+    Returns: (severity, score, cvss_version)
+    """
+    severity = "MEDIUM"
+    score = 5.0
+    cvss_version = None
+    
+    metrics = cve_data.get('metrics', {})
+    
+    # 1. PRIORITÉ MAX: CVSS 4.0
+    if 'cvssMetricV40' in metrics and metrics['cvssMetricV40']:
+        try:
+            cvss_data = metrics['cvssMetricV40'][0]['cvssData']
+            score = cvss_data.get('baseScore', 5.0)
+            base_severity = cvss_data.get('baseSeverity', 'MEDIUM')
+            if base_severity:
+                severity = base_severity.upper()
+            cvss_version = '4.0'
+            logger.info(f"✅ Using CVSS 4.0 for CVE: score={score}, severity={severity}")
+        except Exception as e:
+            logger.warning(f"Error parsing CVSS 4.0: {e}")
+    
+    # 2. PRIORITÉ: CVSS 4.1 (si disponible)
+    elif 'cvssMetricV41' in metrics and metrics['cvssMetricV41']:
+        try:
+            cvss_data = metrics['cvssMetricV41'][0]['cvssData']
+            score = cvss_data.get('baseScore', 5.0)
+            base_severity = cvss_data.get('baseSeverity', 'MEDIUM')
+            if base_severity:
+                severity = base_severity.upper()
+            cvss_version = '4.1'
+            logger.info(f"✅ Using CVSS 4.1 for CVE: score={score}, severity={severity}")
+        except Exception as e:
+            logger.warning(f"Error parsing CVSS 4.1: {e}")
+    
+    # 3. PRIORITÉ: CVSS 3.1
+    elif 'cvssMetricV31' in metrics and metrics['cvssMetricV31']:
+        try:
+            cvss_data = metrics['cvssMetricV31'][0]['cvssData']
+            score = cvss_data.get('baseScore', 5.0)
+            base_severity = cvss_data.get('baseSeverity', 'MEDIUM')
+            if base_severity:
+                severity = base_severity.upper()
+            cvss_version = '3.1'
+            logger.info(f"⚠️ Using CVSS 3.1 for CVE (no 4.x available): score={score}, severity={severity}")
+        except Exception as e:
+            logger.warning(f"Error parsing CVSS 3.1: {e}")
+    
+    # 4. PRIORITÉ: CVSS 3.0
+    elif 'cvssMetricV30' in metrics and metrics['cvssMetricV30']:
+        try:
+            cvss_data = metrics['cvssMetricV30'][0]['cvssData']
+            score = cvss_data.get('baseScore', 5.0)
+            base_severity = cvss_data.get('baseSeverity', 'MEDIUM')
+            if base_severity:
+                severity = base_severity.upper()
+            cvss_version = '3.0'
+            logger.info(f"⚠️ Using CVSS 3.0 for CVE: score={score}, severity={severity}")
+        except Exception as e:
+            logger.warning(f"Error parsing CVSS 3.0: {e}")
+    
+    # 5. DERNIER RECOURS: CVSS 2.0
+    elif 'cvssMetricV2' in metrics and metrics['cvssMetricV2']:
+        try:
+            cvss_data = metrics['cvssMetricV2'][0]['cvssData']
+            score = cvss_data.get('baseScore', 5.0)
+            # Convertir score CVSS 2.0 en sévérité
+            if score >= 9.0:
+                severity = "CRITICAL"
+            elif score >= 7.0:
+                severity = "HIGH"
+            elif score >= 4.0:
+                severity = "MEDIUM"
+            else:
+                severity = "LOW"
+            cvss_version = '2.0'
+            logger.info(f"⚠️ Using CVSS 2.0 for CVE: score={score}, severity={severity}")
+        except Exception as e:
+            logger.warning(f"Error parsing CVSS 2.0: {e}")
+    
+    # Si aucune métrique trouvée
+    if cvss_version is None:
+        cvss_version = 'N/A'
+        logger.warning(f"❌ No CVSS metrics found for CVE")
+    
+    return severity, score, cvss_version
 
 # ========== IMPORT SERVICES ==========
 def import_from_nvd():
@@ -840,35 +1244,9 @@ def import_from_nvd():
                         description = desc.get('value', '')
                         break
                 
-                # Extract severity and CVSS
-                severity = "MEDIUM"
-                score = 5.0
-                
-                metrics = cve_data.get('metrics', {})
-                if 'cvssMetricV31' in metrics:
-                    cvss_data = metrics['cvssMetricV31'][0]['cvssData']
-                    score = cvss_data.get('baseScore', 5.0)
-                    base_severity = cvss_data.get('baseSeverity', 'MEDIUM')
-                    if base_severity:
-                        severity = base_severity.upper()
-                elif 'cvssMetricV30' in metrics:
-                    cvss_data = metrics['cvssMetricV30'][0]['cvssData']
-                    score = cvss_data.get('baseScore', 5.0)
-                    base_severity = cvss_data.get('baseSeverity', 'MEDIUM')
-                    if base_severity:
-                        severity = base_severity.UP()
-                elif 'cvssMetricV2' in metrics:
-                    cvss_data = metrics['cvssMetricV2'][0]['cvssData']
-                    score = cvss_data.get('baseScore', 5.0)
-                    if score >= 9.0:
-                        severity = "CRITICAL"
-                    elif score >= 7.0:
-                        severity = "HIGH"
-                    elif score >= 4.0:
-                        severity = "MEDIUM"
-                    else:
-                        severity = "LOW"
-                
+                                
+                                # ⚡ EXTRACTION DES MÉTRIQUES AVEC PRIORITÉ: 4.0 > 4.1 > 3.1 > 3.0 > 2.0
+                severity, score, cvss_version = extract_cvss_metrics(cve_data)
                 # Extract published date
                 published_date_raw = cve_data.get('published', '')
                 if published_date_raw:
@@ -913,24 +1291,24 @@ def import_from_nvd():
                     logger.info(f"⛔ Skipping CVE {cve_id} due to OUT_OF_SCOPE technology match")
                     continue
 
-                # Insert CVE (not blacklisted)
+                                # Insert CVE (not blacklisted)
                 imported_at = datetime.now().isoformat()
                 cursor.execute('''
                     INSERT INTO cves 
-                    (cve_id, description, severity, cvss_score, published_date, 
+                    (cve_id, description, severity, cvss_score, cvss_version, published_date, 
                      imported_at, last_updated, source)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     cve_id,
                     description[:2000],
                     severity,
                     score,
+                    cvss_version,
                     published_date,
                     imported_at,
                     imported_at,
                     'NVD'
                 ))
-
                 # Insert each unique product for this CVE (avoid duplicates)
                 for p in product_list:
                     vendor_val = (p.get('vendor') or 'Unknown').strip()[:50]
@@ -1189,7 +1567,7 @@ async def get_cves(
             params.append(severity)
         else:
             # Default to HIGH and MEDIUM
-            query += " AND severity IN ('HIGH','MEDIUM')"
+            query += " AND severity IN ('CRITICAL','HIGH','MEDIUM')"
 
         # Vendor/Product filtering
         if vendor:
@@ -1276,7 +1654,7 @@ async def get_cves(
             count_query += " AND severity = ?"
             count_params.append(severity)
         else:
-            count_query += " AND severity IN ('HIGH','MEDIUM')"
+            count_query += " AND severity IN ('CRITICAL','HIGH','MEDIUM')"
 
         if vendor:
             count_query += " AND EXISTS (SELECT 1 FROM affected_products ap WHERE ap.cve_id = cves.cve_id AND LOWER(ap.vendor) LIKE ? )"
@@ -1399,7 +1777,7 @@ async def test_cves():
 
 @app.get('/api/stats')
 async def api_stats():
-    """Return basic statistics for dashboard: total, pending, accepted, rejected, by severity."""
+    """Return basic statistics for dashboard: total, pending, accepted, rejected, by severity, by CVSS version."""
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -1411,11 +1789,19 @@ async def api_stats():
         accepted = cursor.fetchone()[0]
         cursor.execute("SELECT COUNT(*) FROM cves WHERE status = 'REJECTED'")
         rejected = cursor.fetchone()[0]
+        
         # severities
         cursor.execute("SELECT severity, COUNT(*) as cnt FROM cves GROUP BY severity")
         rows = cursor.fetchall()
         cves_by_severity = {r['severity']: r['cnt'] for r in rows}
+        
+        # CVSS versions
+        cursor.execute("SELECT cvss_version, COUNT(*) as cnt FROM cves WHERE cvss_version != 'N/A' GROUP BY cvss_version")
+        cvss_rows = cursor.fetchall()
+        cves_by_cvss_version = {r['cvss_version']: r['cnt'] for r in cvss_rows}
+        
         conn.close()
+        
         return {
             'success': True,
             'summary': {
@@ -1428,13 +1814,362 @@ async def api_stats():
                     'HIGH': cves_by_severity.get('HIGH', 0),
                     'MEDIUM': cves_by_severity.get('MEDIUM', 0),
                     'LOW': cves_by_severity.get('LOW', 0),
-                }
+                },
+                'cves_by_cvss_version': cves_by_cvss_version
             }
         }
     except Exception as e:
         logger.error('Error computing stats: %s', e)
         raise HTTPException(status_code=500, detail=str(e))
-
+@app.get("/api/cves/cvss4")
+async def get_cvss4_cves(limit: int = 20):
+    """Get CVEs with CVSS 4.x"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT cve_id, description, severity, cvss_score, cvss_version, published_date
+            FROM cves 
+            WHERE cvss_version IN ('4.0', '4.1')
+            ORDER BY published_date DESC 
+            LIMIT ?
+        ''', (limit,))
+        
+        cves = []
+        for row in cursor.fetchall():
+            cve = dict(row)
+            cve['short_description'] = (cve.get('description') or '')[:200]
+            cves.append(cve)
+        
+        conn.close()
+        
+        return {
+            "success": True,
+            "cves": cves,
+            "count": len(cves)
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Error fetching CVSS 4.x CVEs: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+@app.post("/api/import/test-now")
+async def import_test_now():
+    """Import latest CVEs immediately - PUBLIC endpoint - MODIFIÉ POUR PÉRIODE PLUS LONGUE"""
+    logger.info("=== IMMEDIATE IMPORT OF LATEST CVEs ===")
+    
+    try:
+        # MODIFICATION ICI : Importer les CVEs des 24 dernières heures (au lieu de 6)
+        start_date = datetime.now() - timedelta(hours=24)  # ← Changé de 6 à 24 heures
+        end_date = datetime.now()
+        
+        logger.info(f"🕒 Importing CVEs from {start_date} to {end_date}")
+        
+        base_url = "https://services.nvd.nist.gov/rest/json/cves/2.0"
+        params = {
+            "pubStartDate": start_date.strftime("%Y-%m-%dT%H:%M:%S"),
+            "pubEndDate": end_date.strftime("%Y-%m-%dT%H:%M:%S"),
+            "resultsPerPage": 200  # Augmenté aussi pour récupérer plus
+        }
+        
+        logger.info(f"📡 Requesting NVD API...")
+        
+        response = requests.get(base_url, params=params, timeout=60)  # Timeout augmenté
+        response.raise_for_status()
+        data = response.json()
+        
+        total_results = data.get('totalResults', 0)
+        vulnerabilities = data.get('vulnerabilities', [])
+        
+        logger.info(f"📊 Found {total_results} total results, {len(vulnerabilities)} in this page")
+        
+        # Si plus de résultats que ce que nous avons récupéré, nous pouvons paginer
+        if total_results > len(vulnerabilities):
+            logger.info(f"⚠️ Note: More CVEs available ({total_results}) than fetched ({len(vulnerabilities)}). Consider pagination.")
+        
+        # Traitement et import
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        imported = 0
+        skipped = 0
+        for idx, vuln in enumerate(vulnerabilities):
+            try:
+                cve_data = vuln.get('cve', {})
+                cve_id = cve_data.get('id', '')
+                
+                if not cve_id:
+                    continue
+                
+                # Vérifier si le CVE existe déjà
+                cursor.execute("SELECT cve_id FROM cves WHERE cve_id = ?", (cve_id,))
+                if cursor.fetchone():
+                    skipped += 1
+                    continue
+                
+                # Extraire les informations de base
+                description = ""
+                for desc in cve_data.get('descriptions', []):
+                    if desc.get('lang') == 'en':
+                        description = desc.get('value', '')[:2000]  # Limite augmentée
+                        break
+                
+                # ⚡ EXTRACTION DES MÉTRIQUES AVEC PRIORITÉ: 4.0 > 4.1 > 3.1 > 3.0 > 2.0
+                severity, score, cvss_version = extract_cvss_metrics(cve_data)
+                
+                # Date de publication
+                published_date = cve_data.get('published', '')
+                if published_date:
+                    try:
+                        if published_date.endswith('Z'):
+                            published_date = published_date.replace('Z', '+00:00')
+                    except:
+                        pass
+                
+                # Extraire les produits affectés
+                product_list = get_products_for_cve(cve_data)
+                
+                # Vérifier la blacklist
+                is_blacklisted = False
+                for p in product_list:
+                    vendor_val = (p.get('vendor') or 'Unknown').strip()[:50]
+                    product_val = (p.get('product') or 'Multiple Products').strip()[:50]
+                    
+                    if not product_val or product_val == 'Multiple Products':
+                        continue
+                    if not is_valid_product_name(product_val):
+                        continue
+                        
+                    cursor.execute('''
+                        SELECT status FROM technologies 
+                        WHERE LOWER(vendor) = ? AND LOWER(product) = ? AND status = 'OUT_OF_SCOPE' 
+                        LIMIT 1
+                    ''', (vendor_val.lower(), product_val.lower()))
+                    tech_row = cursor.fetchone()
+                    if tech_row:
+                        is_blacklisted = True
+                        break
+                
+                if is_blacklisted:
+                    logger.info(f"⛔ Skipping CVE {cve_id} due to OUT_OF_SCOPE technology")
+                    skipped += 1
+                    continue
+                
+                # Insérer le CVE
+                imported_at = datetime.now().isoformat()
+                cursor.execute('''
+                    INSERT INTO cves (cve_id, description, severity, cvss_score, cvss_version, 
+                                    published_date, imported_at, last_updated, source)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (cve_id, description, severity, score, cvss_version, 
+                      published_date, imported_at, imported_at, 'NVD'))
+                
+                # Insérer les produits affectés
+                for p in product_list:
+                    vendor_val = (p.get('vendor') or 'Unknown').strip()[:50]
+                    product_val = (p.get('product') or 'Multiple Products').strip()[:50]
+                    confidence_val = float(p.get('confidence', 0.0))
+                    
+                    if product_val and product_val != 'Multiple Products' and not is_valid_product_name(product_val):
+                        continue
+                    
+                    cursor.execute('''
+                        SELECT 1 FROM affected_products 
+                        WHERE cve_id = ? AND vendor = ? AND product = ?
+                    ''', (cve_id, vendor_val, product_val))
+                    if not cursor.fetchone():
+                        cursor.execute('''
+                            INSERT INTO affected_products (cve_id, vendor, product, confidence)
+                            VALUES (?, ?, ?, ?)
+                        ''', (cve_id, vendor_val, product_val, confidence_val))
+                
+                imported += 1
+                
+                if imported % 10 == 0:
+                    logger.info(f"  Imported {imported} new CVEs...")
+                
+            except Exception as e:
+                logger.warning(f"Error importing CVE {cve_id if 'cve_id' in locals() else 'unknown'}: {e}")
+                skipped += 1
+                continue
+        
+        conn.commit()
+        conn.close()
+        
+        logger.info(f"✅ Immediate import completed: {imported} new CVEs, {skipped} skipped")
+        
+        return {
+            "success": True,
+            "imported": imported,
+            "skipped": skipped,
+            "total_found": len(vulnerabilities),
+            "message": f"Imported {imported} new CVEs from the last 48 hours"
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Immediate import failed: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "message": "Failed to import latest CVEs"
+        }
+@app.post("/api/fix-missing-descriptions")
+async def fix_missing_descriptions():
+    """Récupérer les descriptions manquantes depuis NVD"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    # Trouver les CVEs avec descriptions courtes ou manquantes
+    cursor.execute('''
+        SELECT cve_id FROM cves 
+        WHERE description IS NULL OR LENGTH(description) < 50
+        ORDER BY published_date DESC
+        LIMIT 20
+    ''')
+    
+    results = cursor.fetchall()
+    fixed_count = 0
+    
+    for row in results:
+        cve_id = row['cve_id']
+        
+        try:
+            # Récupérer depuis NVD
+            response = requests.get(
+                f"https://services.nvd.nist.gov/rest/json/cves/2.0?cveId={cve_id}",
+                timeout=15
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                if data.get('vulnerabilities'):
+                    cve_data = data['vulnerabilities'][0]['cve']
+                    
+                    # Extraire la description
+                    description = ""
+                    for desc in cve_data.get('descriptions', []):
+                        if desc.get('lang') == 'en':
+                            description = desc.get('value', '')
+                            break
+                    
+                    if description and len(description) > 10:
+                        # Mettre à jour la description
+                        cursor.execute('''
+                            UPDATE cves SET description = ? WHERE cve_id = ?
+                        ''', (description[:2000], cve_id))
+                        
+                        # Re-extraire les produits
+                        product_list = get_products_for_cve(cve_data)
+                        
+                        # Supprimer les anciens produits
+                        cursor.execute('DELETE FROM affected_products WHERE cve_id = ?', (cve_id,))
+                        
+                        # Insérer les nouveaux produits
+                        for p in product_list:
+                            vendor_val = (p.get('vendor') or 'Unknown').strip()[:50]
+                            product_val = (p.get('product') or 'Multiple Products').strip()[:50]
+                            confidence_val = float(p.get('confidence', 0.0))
+                            
+                            cursor.execute('''
+                                INSERT INTO affected_products (cve_id, vendor, product, confidence)
+                                VALUES (?, ?, ?, ?)
+                            ''', (cve_id, vendor_val, product_val, confidence_val))
+                        
+                        fixed_count += 1
+                        logger.info(f"Fixed description for {cve_id}")
+                        
+        except Exception as e:
+            logger.warning(f"Error fixing {cve_id}: {e}")
+            continue
+    
+    conn.commit()
+    conn.close()
+    
+    return {
+        "success": True,
+        "fixed_count": fixed_count,
+        "total_checked": len(results),
+        "message": f"Fixed {fixed_count} CVEs with missing descriptions"
+    }
+@app.post("/api/re-extract-products")
+async def re_extract_products(cve_id: Optional[str] = None):
+    """Forcer la ré-extraction des produits pour une CVE ou toutes"""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    if cve_id:
+        # Ré-extraire une CVE spécifique
+        cursor.execute('SELECT description FROM cves WHERE cve_id = ?', (cve_id,))
+        row = cursor.fetchone()
+        
+        if row and row['description']:
+            description = row['description']
+            vendor, product = extract_product_from_description_improved(description)
+            
+            if vendor and product:
+                vendor, product = clean_vendor_product(vendor, product)
+                
+                cursor.execute('''
+                    UPDATE affected_products 
+                    SET vendor = ?, product = ?, confidence = 0.9
+                    WHERE cve_id = ?
+                ''', (vendor, product, cve_id))
+                
+                conn.commit()
+                conn.close()
+                
+                return {
+                    "success": True,
+                    "cve_id": cve_id,
+                    "vendor": vendor,
+                    "product": product,
+                    "message": f"Re-extracted products for {cve_id}"
+                }
+    else:
+        # Ré-extraire toutes les CVEs avec Unknown: Multiple Products
+        cursor.execute('''
+            SELECT DISTINCT c.cve_id, c.description
+            FROM cves c
+            JOIN affected_products ap ON c.cve_id = ap.cve_id
+            WHERE ap.vendor = 'Unknown' AND ap.product = 'Multiple Products'
+            AND c.description IS NOT NULL
+            LIMIT 50
+        ''')
+        
+        results = cursor.fetchall()
+        fixed_count = 0
+        
+        for row in results:
+            cve_id = row['cve_id']
+            description = row['description']
+            
+            vendor, product = extract_product_from_description_improved(description)
+            if not vendor or not product:
+                vendor, product = extract_product_from_description(description)
+            
+            if vendor and product and product != 'Multiple Products':
+                vendor, product = clean_vendor_product(vendor, product)
+                
+                cursor.execute('''
+                    UPDATE affected_products 
+                    SET vendor = ?, product = ?, confidence = 0.8
+                    WHERE cve_id = ? AND vendor = 'Unknown' AND product = 'Multiple Products'
+                ''', (vendor, product, cve_id))
+                
+                fixed_count += 1
+        
+        conn.commit()
+        conn.close()
+        
+        return {
+            "success": True,
+            "fixed_count": fixed_count,
+            "total_checked": len(results),
+            "message": f"Re-extracted {fixed_count} CVEs"
+        }
+    
+    conn.close()
+    return {"success": False, "message": "No CVE found or no description available"}
 @app.post("/api/import/trigger")
 async def trigger_import(background_tasks: BackgroundTasks):
     """Trigger a manual import"""

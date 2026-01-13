@@ -708,37 +708,44 @@
         <!-- Main Content -->
         <div class="main-content">
             <!-- Top Bar -->
-            <div class="top-bar">
-                <div class="page-title">
-                    <div style="display: flex; align-items: center; gap: 16px;">
-                        <!-- Petit logo TDS by Nomios -->
-                        <img src="tds_by_nomios.png" alt="TDS" 
-                             style="height: 24px; width: auto; opacity: 0.7; border-radius: 3px;">
-                        <div>
-                            <h1>🛡️ CTBA Platform Dashboard</h1>
-                            <p>📋 CVEs • 🔧 Technologies • 📊 Statistics • Powered by TDS by Nomios</p>
-                        </div>
-                    </div>
-                </div>
-                <div class="user-actions">
-                    <div class="search-box">
-                        <i class="fas fa-search"></i>
-                        <input type="text" id="global-search" placeholder="Search CVEs, technologies...">
-                    </div>
-                    <button class="btn btn-secondary" onclick="refreshData()">
-                        <i class="fas fa-sync-alt"></i>
-                        Refresh
-                    </button>
-                    <div class="user-profile" onclick="toggleUserMenu()">
-                        <div class="avatar" id="user-avatar">TR</div>
-                        <div class="user-info">
-                            <div class="user-name" id="user-name">Tahar Remadi</div>
-                            <div class="user-role" id="user-role">VOC Lead</div>
-                        </div>
-                        <i class="fas fa-chevron-down"></i>
-                    </div>
-                </div>
+           <div class="top-bar">
+    <div class="page-title">
+        <div style="display: flex; align-items: center; gap: 16px;">
+            <!-- Petit logo TDS by Nomios -->
+            <img src="backend\static\tds_by_nomios.png" alt="tds_by_nomios" 
+                 style="height: 24px; width: auto; opacity: 0.7; border-radius: 3px;">
+            <div>
+                <h1>🛡️ CTBA Platform Dashboard</h1>
+                <p>📋 CVEs • 🔧 Technologies • 📊 Statistics • Powered by TDS by Nomios</p>
             </div>
+        </div>
+    </div>
+    <div class="user-actions">
+        <!-- AJOUTEZ CE BOUTON EN PREMIER -->
+        <button class="btn btn-primary" onclick="refreshLatestCVEs()" 
+                style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);">
+            <i class="fas fa-bolt"></i>
+            Refresh Latest CVEs
+        </button>
+        
+        <div class="search-box">
+            <i class="fas fa-search"></i>
+            <input type="text" id="global-search" placeholder="Search CVEs, technologies...">
+        </div>
+        <button class="btn btn-secondary" onclick="refreshData()">
+            <i class="fas fa-sync-alt"></i>
+            Refresh
+        </button>
+        <div class="user-profile" onclick="toggleUserMenu()">
+            <div class="avatar" id="user-avatar">TR</div>
+            <div class="user-info">
+                <div class="user-name" id="user-name">Tahar Remadi</div>
+                <div class="user-role" id="user-role">VOC Lead</div>
+            </div>
+            <i class="fas fa-chevron-down"></i>
+        </div>
+    </div>
+</div>
 
             <!-- Dashboard Content -->
             <div id="dashboard-content">
@@ -1116,15 +1123,16 @@
                     <div class="card">
                         <div class="card-header">
                             <div class="card-title">Recent CVEs</div>
-                            <div class="card-actions">
-                                <button class="btn btn-secondary btn-icon" onclick="exportCVEs()">
-                                    <i class="fas fa-download"></i>
-                                </button>
-                                <button class="btn btn-primary" onclick="triggerImport()">
-                                    <i class="fas fa-sync"></i>
-                                    Import CVEs
-                                </button>
-                            </div>
+                           <div class="card-actions">
+    <button class="btn btn-secondary btn-icon" onclick="exportCVEs()">
+        <i class="fas fa-download"></i>
+    </button>
+    <!-- AJOUTEZ CE BOUTON -->
+    <button class="btn btn-primary" onclick="refreshLatestCVEs()">
+        <i class="fas fa-bolt"></i>
+        Get Latest CVEs
+    </button>
+</div>
                         </div>
                         <div class="table-container">
                             <table>
@@ -1748,25 +1756,162 @@ function formatLocalDate(dateString) {
             }, 3000);
         }
 
-        async function triggerImport() {
-            try {
-                const response = await fetch(`${API_BASE_URL}/api/import/trigger`, {
-                    method: 'POST'
-                });
-                
-                if (response.ok) {
-                    showNotification('success', 'Import triggered. Check back in a few minutes.');
-                }
-            } catch (error) {
-                showNotification('error', 'Failed to trigger import');
+       async function refreshLatestCVEs() {
+    try {
+        // Afficher l'indicateur de chargement
+        showLoadingOverlay();
+        
+        // Déclencher l'import IMMÉDIAT des CVEs récents
+        const importResponse = await fetch(`${API_BASE_URL}/api/import/test-now`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
             }
+        });
+        
+        const result = await importResponse.json();
+        console.log('Import result:', result);
+        
+        if (result.success) {
+            // Attendre 2 secondes pour que l'import soit complété
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            
+            // Recharger les statistiques et les CVEs
+            await loadStats();
+            await loadCVEs();
+            
+            showNotification('success', 
+                `✅ Imported ${result.imported} new CVEs from the last 2 hours!`);
+        } else {
+            showNotification('error', 
+                `❌ Import failed: ${result.error || 'Unknown error'}`);
         }
+        
+    } catch (error) {
+        console.error('Error refreshing latest CVEs:', error);
+        showNotification('error', 'Failed to refresh latest CVEs: ' + error.message);
+    } finally {
+        hideLoadingOverlay();
+    }
+}
 
-        function refreshData() {
-            loadStats();
-            loadCVEs();
-            showNotification('info', 'Data refreshed');
+// Fonction d'indicateur de chargement améliorée
+function showLoadingOverlay() {
+    let overlay = document.getElementById('global-loading-overlay');
+    if (!overlay) {
+        overlay = document.createElement('div');
+        overlay.id = 'global-loading-overlay';
+        overlay.style.cssText = `
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.7);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            z-index: 9999;
+            color: white;
+            font-size: 18px;
+        `;
+        
+        overlay.innerHTML = `
+            <div style="
+                background: white;
+                padding: 30px;
+                border-radius: 12px;
+                text-align: center;
+                color: #1e293b;
+                box-shadow: 0 10px 25px rgba(0,0,0,0.3);
+                max-width: 400px;
+                width: 90%;
+            ">
+                <div style="
+                    border: 4px solid #f3f3f3;
+                    border-top: 4px solid #3498db;
+                    border-radius: 50%;
+                    width: 60px;
+                    height: 60px;
+                    animation: spin 1s linear infinite;
+                    margin: 0 auto 20px;
+                "></div>
+                <h3 style="margin-bottom: 10px;">🔄 Fetching Latest CVEs</h3>
+                <p style="color: #64748b; margin-bottom: 20px;">
+                    Importing newest CVEs from NVD database...
+                </p>
+                <div id="loading-progress" style="
+                    background: #e2e8f0;
+                    height: 6px;
+                    border-radius: 3px;
+                    overflow: hidden;
+                    margin-bottom: 15px;
+                ">
+                    <div id="loading-progress-bar" style="
+                        background: linear-gradient(90deg, #667eea, #764ba2);
+                        height: 100%;
+                        width: 0%;
+                        transition: width 0.3s;
+                    "></div>
+                </div>
+                <p id="loading-status" style="font-size: 14px; color: #64748b;">
+                    Connecting to NVD...
+                </p>
+            </div>
+        `;
+        
+        document.body.appendChild(overlay);
+        
+        // Animation de la barre de progression
+        let progress = 0;
+        const progressBar = document.getElementById('loading-progress-bar');
+        const statusText = document.getElementById('loading-status');
+        const interval = setInterval(() => {
+            progress += 2;
+            if (progress <= 90) {
+                progressBar.style.width = progress + '%';
+                
+                // Mettre à jour le texte de statut
+                if (progress < 30) {
+                    statusText.textContent = 'Connecting to NVD API...';
+                } else if (progress < 60) {
+                    statusText.textContent = 'Fetching latest vulnerabilities...';
+                } else {
+                    statusText.textContent = 'Processing and importing CVEs...';
+                }
+            }
+        }, 100);
+        
+        // Stocker l'intervalle pour le nettoyer plus tard
+        overlay.dataset.interval = interval;
+    }
+}
+
+function hideLoadingOverlay() {
+    const overlay = document.getElementById('global-loading-overlay');
+    if (overlay) {
+        // Nettoyer l'intervalle
+        if (overlay.dataset.interval) {
+            clearInterval(overlay.dataset.interval);
         }
+        
+        // Animation de sortie
+        overlay.style.opacity = '0';
+        overlay.style.transition = 'opacity 0.3s';
+        
+        setTimeout(() => {
+            if (overlay.parentNode) {
+                overlay.parentNode.removeChild(overlay);
+            }
+        }, 300);
+    }
+}
+      function refreshData() {
+    loadStats();
+    loadCVEs();
+    showNotification('info', 'Data refreshed from database');
+}
 
         function quickAction(action) {
             switch(action) {
