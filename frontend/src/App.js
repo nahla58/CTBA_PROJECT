@@ -1,8 +1,16 @@
 // src/App.js
 import React, { useState, useEffect } from 'react';
 import { BrowserRouter as Router, Route, Routes, Link, useLocation } from 'react-router-dom';
+import Dashboard from './components/Dashboard';
+import Login from './components/Login';
 import CVEList from './components/CVElist';
 import TechnologyManager from './components/TechnologyManager';
+import ActionHistory from './components/ActionHistory';
+import BlacklistManagement from './components/BlacklistManagement';
+import AcceptedCVEs from './components/AcceptedCVEs';
+import RejectedCVEs from './components/RejectedCVEs';
+import NLPImprovement from './components/NLPImprovement';
+import MultiSourceIngestion from './components/MultiSourceIngestion';
 import './App.css';
 
 // Composant Statistics
@@ -219,27 +227,54 @@ function NavLink({ to, children }) {
 
 // Composant principal
 function AppContent() {
-  return (
-    <div className="App">
-      <nav className="navbar">
-        <div className="nav-brand">
-          <h1>🛡️ CTBA Dashboard</h1>
-        </div>
-        <div className="nav-links">
-          <NavLink to="/">📋 CVEs</NavLink>
-          <NavLink to="/technologies">🔧 Technologies</NavLink>
-          <NavLink to="/stats">📊 Statistics</NavLink>
-        </div>
-      </nav>
+  const [user, setUser] = useState(null);
+  const [loading, setLoading] = useState(true);
 
-      <div className="main-content">
-        <Routes>
-          <Route path="/" element={<CVEList />} />
-          <Route path="/technologies" element={<TechnologyManager />} />
-          <Route path="/stats" element={<StatsComponent />} />
-        </Routes>
-      </div>
-    </div>
+  useEffect(() => {
+    // Check if user is already logged in
+    const storedUser = localStorage.getItem('user');
+    if (storedUser) {
+      try {
+        setUser(JSON.parse(storedUser));
+      } catch (e) {
+        localStorage.removeItem('user');
+        localStorage.removeItem('token');
+      }
+    }
+    setLoading(false);
+  }, []);
+
+  const handleLoginSuccess = (userData) => {
+    setUser(userData);
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem('user');
+    localStorage.removeItem('token');
+    setUser(null);
+  };
+
+  if (loading) {
+    return <div style={{textAlign: 'center', paddingTop: '50px'}}>⏳ Loading...</div>;
+  }
+
+  if (!user) {
+    return <Login onLoginSuccess={handleLoginSuccess} />;
+  }
+
+  return (
+    <Routes>
+      <Route path="/" element={<Dashboard user={user} onLogout={handleLogout} />} />
+      <Route path="/cves" element={<CVEList user={user} onLogout={handleLogout} />} />
+      <Route path="/technologies" element={<TechnologyManager user={user} onLogout={handleLogout} />} />
+      <Route path="/stats" element={<StatsComponent user={user} onLogout={handleLogout} />} />
+      <Route path="/history" element={<ActionHistory user={user} onLogout={handleLogout} />} />
+      <Route path="/blacklist" element={<BlacklistManagement user={user} onLogout={handleLogout} />} />
+      <Route path="/accepted" element={<AcceptedCVEs user={user} onLogout={handleLogout} />} />
+      <Route path="/rejected" element={<RejectedCVEs user={user} onLogout={handleLogout} />} />
+      <Route path="/ingestion" element={<MultiSourceIngestion user={user} onLogout={handleLogout} />} />
+      <Route path="/nlp-improvement" element={<NLPImprovement user={user} onLogout={handleLogout} />} />
+    </Routes>
   );
 }
 
