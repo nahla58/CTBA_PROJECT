@@ -2,6 +2,8 @@
 Bulletin Management REST API Routes
 """
 import os
+import json
+import sqlite3
 import logging
 from typing import Optional, List
 from fastapi import APIRouter, Query, HTTPException, UploadFile, File, Depends
@@ -15,12 +17,14 @@ from app.models.bulletin_models import (
 )
 from app.services.bulletin_service import BulletinService, RegionService
 from app.services.delivery_engine import BulletinDeliveryEngine, BulletinValidator
+from app.services.region_mailing_service import RegionMailingService
 
 logger = logging.getLogger(__name__)
 
 # Initialize services
 bulletin_service = BulletinService()
 region_service = RegionService()
+region_mailing_service = RegionMailingService()
 
 # Routers
 router = APIRouter()
@@ -28,6 +32,12 @@ region_router = APIRouter()
 
 # Global delivery engine reference (set by main.py)
 delivery_engine: Optional[BulletinDeliveryEngine] = None
+
+
+def set_delivery_engine(engine):
+    """Set the global delivery engine instance"""
+    global delivery_engine
+    delivery_engine = engine
 
 
 # ========== REGION ENDPOINTS ==========
@@ -251,14 +261,14 @@ async def preview_bulletin(bulletin_id: int, request: BulletinSendRequest):
         is_valid, errors = BulletinValidator.validate_for_send(bulletin_id)
         
         # Count recipients per region
-        all_regions = region_service.get_regions()
-        region_map = {r['name']: r for r in all_regions}
-        
         recipient_counts = {}
         total_recipients = 0
         for region_name in regions_to_send:
-            region = region_map.get(region_name)
-            count = len(region['recipients']) if region else 0
+            mailing = region_mailing_service.get_region_mailing_by_name(region_name)
+            if mailing:
+                count = mailing.get_recipient_count()
+            else:
+                count = 0
             recipient_counts[region_name] = count
             total_recipients += count
         
@@ -275,6 +285,8 @@ async def preview_bulletin(bulletin_id: int, request: BulletinSendRequest):
         return {
             "bulletin_id": bulletin_id,
             "title": bulletin['title'],
+            "body": bulletin.get('body'),
+            "regions": regions_to_send,
             "recipient_counts": recipient_counts,
             "total_recipients": total_recipients,
             "preview_html": preview_html,
@@ -406,4 +418,101 @@ async def process_queue(max_jobs: int = Query(10, ge=1, le=100)):
         }
     except Exception as e:
         logger.error(f"Error processing queue: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ========== CVE GROUPING ENDPOINTS ==========
+
+@router.get("/cves/grouped", tags=["cves"])
+async def get_grouped_cves(
+    status: str = Query("ACCEPTED", description="CVE status filter (ACCEPTED, REJECTED, DEFERRED)"),
+    technology_filter: Optional[str] = Query(None, description="Filter by vendor:product")
+):
+    """
+    Get CVEs grouped by:
+    1. Technology/product
+    2. Identical remediation guidance
+    
+    Returns hierarchically grouped CVEs organized by vendor:product and remediation.
+    """
+    try:
+        # Connect to database and fetch CVEs with their products
+        conn = sqlite3.connect('ctba_platform.db')
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        # Fetch CVEs with their affected products
+        query = '''
+            SELECT DISTINCT
+                c.id,
+                c.cve_id,
+                c.severity,
+                c.cvss_score,
+                c.published_date,
+                c.description,
+                c.status,
+                ap.vendor,
+                ap.product
+            FROM cves c
+            LEFT JOIN affected_products ap ON c.cve_id = ap.cve_id
+            WHERE c.status = ?
+            ORDER BY c.severity DESC, c.cvss_score DESC
+        '''
+        
+        cursor.execute(query, (status,))
+        rows = cursor.fetchall()
+        
+        # Group rows by CVE and organize products
+        cves_dict = {}
+        for row in rows:
+            cve_id = row['cve_id']
+            
+            if cve_id not in cves_dict:
+                cves_dict[cve_id] = {
+                    'cve_id': cve_id,
+                    'severity': row['severity'],
+                    'cvss_score': row['cvss_score'],
+                    'published_date': row['published_date'],
+                    'description': row['description'],
+                    'remediation': None,
+                    'products': []
+                }
+            
+            # Add product if it exists
+            if row['vendor'] and row['product']:
+                product = {
+                    'vendor': row['vendor'],
+                    'product': row['product']
+                }
+                # Avoid duplicates
+                if product not in cves_dict[cve_id]['products']:
+                    cves_dict[cve_id]['products'].append(product)
+        
+        cves = list(cves_dict.values())
+        
+        # Apply technology filter if provided
+        if technology_filter:
+            filtered_cves = []
+            for cve in cves:
+                matched = False
+                for product in cve.get('products', []):
+                    if f"{product.get('vendor', '')}:{product.get('product', '')}" == technology_filter:
+                        matched = True
+                        break
+                if matched:
+                    filtered_cves.append(cve)
+            cves = filtered_cves
+        
+        conn.close()
+        
+        # Group CVEs by technology and remediation
+        grouped = BulletinService._group_cves_by_technology(cves)
+        
+        return {
+            "total_cves": len(cves),
+            "total_groups": len(grouped),
+            "groups": grouped
+        }
+    except Exception as e:
+        logger.error(f"Error fetching grouped CVEs: {e}")
         raise HTTPException(status_code=500, detail=str(e))

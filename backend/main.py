@@ -2,7 +2,7 @@
 CTBA Platform - Backend API
 Compatible avec CVElist.js React frontend - INTELLIGENT PRODUCT EXTRACTION
 """
-from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, Query, Header, Form
+from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, Query, Header, Form, Body, File, UploadFile, Request
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -28,7 +28,9 @@ import os
 import hashlib
 import binascii
 import jwt
+import concurrent.futures
 from dotenv import load_dotenv
+from services.cve_enrichment_service import CVEEnrichmentService
 
 # Load environment variables from .env file
 load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
@@ -279,9 +281,20 @@ async def lifespan(app: FastAPI):
     nlp_extractor.initialize()
     
     init_database()
-    # Start import immediately
-    threading.Thread(target=import_from_nvd, daemon=True).start()
-    start_import_scheduler()
+    
+    # ✅ Import automatique au démarrage depuis NVD et CVEdetails
+    logger.info("🚀 Import automatique au démarrage...")
+    
+    # Import NVD (rapide)
+    threading.Thread(target=lambda: import_from_nvd(), daemon=True).start()
+    
+    # Import CVEdetails en parallèle
+    threading.Thread(target=lambda: import_from_cvedetails(), daemon=True).start()
+    
+    logger.info("✅ Base de données initialisée - imports NVD/CVEdetails lancés")
+    
+    # Scheduler pour imports périodiques
+    threading.Thread(target=start_import_scheduler, daemon=True).start()
     logger.info("CTBA Platform API started successfully")
     
     yield
@@ -428,11 +441,20 @@ def init_database():
             title TEXT NOT NULL,
             body TEXT,
             regions TEXT,
-            status TEXT DEFAULT 'DRAFT' CHECK(status IN ('DRAFT','SENT','NOT_PROCESSED')),
+            status TEXT DEFAULT 'DRAFT' CHECK(status IN ('DRAFT','SENT','NOT_PROCESSED','CLOSED')),
             created_by TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             sent_at TIMESTAMP,
-            last_reminder INTEGER DEFAULT 0
+            last_reminder INTEGER DEFAULT 0,
+            reminder_7_sent_at TIMESTAMP,
+            reminder_14_sent_at TIMESTAMP,
+            escalation_30_sent_at TIMESTAMP,
+            closed_at TIMESTAMP,
+            closed_by TEXT,
+            closure_reason TEXT,
+            can_reopen BOOLEAN DEFAULT 1,
+            reopened_at TIMESTAMP,
+            reopened_by TEXT
         )
     ''')
 
@@ -498,6 +520,30 @@ def init_database():
         logger.info("User seeding completed")
     else:
         logger.info(f"Users already exist in database ({cnt} users)")
+    
+    # Seed default regions (if none exist)
+    cursor.execute("SELECT COUNT(*) as cnt FROM regions")
+    region_cnt = cursor.fetchone()[0]
+    logger.info(f"Regions count in DB: {region_cnt}")
+    if region_cnt == 0:
+        logger.info("Seeding default regions...")
+        default_regions = [
+            ('NORAM', 'North America Region', 'admin@example.com'),
+            ('LATAM', 'Latin America Region', 'admin@example.com'),
+            ('EUROPE', 'Europe Region', 'admin@example.com'),
+            ('APMEA', 'Asia Pacific, Middle East & Africa Region', 'admin@example.com')
+        ]
+        for name, description, recipients in default_regions:
+            try:
+                cursor.execute("INSERT INTO regions (name, description, recipients) VALUES (?, ?, ?)", 
+                             (name, description, recipients))
+                logger.info(f"✅ Seeded region: {name}")
+            except Exception as e:
+                logger.warning(f"Could not insert region {name}: {e}")
+        conn.commit()
+        logger.info("Region seeding completed")
+    else:
+        logger.info(f"Regions already exist in database ({region_cnt} regions)")
     
     conn.commit()
     conn.close()
@@ -1203,8 +1249,36 @@ def _get_severity_from_cvss(cvss_score: float) -> str:
 def get_products_for_cve(cve_data: Dict) -> List[Dict[str, Any]]:
     """
     Extract a list of affected products using CPE URIs + improved NLP extraction
+    With filtering to remove corrupted/hash-like products
     """
     products_dict = {}
+
+    def is_valid_product_name(vendor: str, product: str) -> bool:
+        """Check if vendor/product look legitimate (not hash-like or corrupted)"""
+        # Reject if contains only hex characters or hash-like patterns
+        vendor_lower = vendor.lower() if vendor else ""
+        product_lower = product.lower() if product else ""
+        
+        # Filter out hash-like identifiers (too many hex chars)
+        hex_count = sum(1 for c in vendor_lower + product_lower if c in 'abcdef0123456789')
+        total_chars = len(vendor_lower) + len(product_lower)
+        if total_chars > 0 and hex_count / total_chars > 0.8:
+            return False  # Looks like a hash
+        
+        # Filter out corrupted patterns like "Old6Ma:", "C4M0Uflag3:"
+        if re.match(r'^[A-Za-z0-9]{1,10}$', vendor_lower) and len(vendor_lower) <= 15:
+            # Single word vendor with lots of numbers - suspicious
+            if sum(1 for c in vendor_lower if c.isdigit()) / len(vendor_lower) > 0.4:
+                return False
+        
+        # Filter out 'www.' patterns that are corrupted
+        if vendor_lower.startswith('www.'):
+            # Should have proper domain name after www.
+            domain_part = vendor_lower[4:]
+            if not any(c.isalpha() for c in domain_part) or len(domain_part) < 3:
+                return False
+        
+        return True
 
     def walk_nodes_with_confidence(nodes, parent_confidence=1.0):
         for node in nodes:
@@ -1214,7 +1288,7 @@ def get_products_for_cve(cve_data: Dict) -> List[Dict[str, Any]]:
                 uri = match.get('cpe23Uri') or match.get('criteria')
                 if uri:
                     vendor, product = extract_vendor_product_from_cpe(uri)
-                    if vendor and product:
+                    if vendor and product and is_valid_product_name(vendor, product):
                         vendor, product = clean_vendor_product(vendor, product)
                         if product and product != 'Multiple Products':
                             cpe_confidence = node_confidence * 1.0
@@ -1254,7 +1328,7 @@ def get_products_for_cve(cve_data: Dict) -> List[Dict[str, Any]]:
             product = p.get('product', '').strip()
             confidence = p.get('confidence', 0.5)
             
-            if vendor and product and product != 'Multiple Products':
+            if vendor and product and product != 'Multiple Products' and is_valid_product_name(vendor, product):
                 key = f"{vendor.lower()}|{product.lower()}"
                 # Donner priorité aux résultats NLP avec haute confiance
                 if key not in products_dict or confidence > products_dict[key]['confidence']:
@@ -1323,9 +1397,39 @@ def extract_from_reference_url(url: str):
 
 
 # ========== FONCTION UTILITAIRE CVSS ==========
+def get_cvss_priority(version):
+    """Get priority level for CVSS version (higher = better)"""
+    priority_map = {'4.1': 4, '4.0': 3, '3.1': 2, '3.0': 1, '2.0': 0}
+    return priority_map.get(version, -1)
+
+
+def compare_cvss(existing_score, existing_version, new_score, new_version):
+    """
+    Compare two CVSS scores and versions.
+    Returns (best_score, best_version).
+    Priority: 4.1 > 4.0 > 3.1 > 3.0 > 2.0
+    For same version, uses max score
+    """
+    existing_priority = get_cvss_priority(existing_version or 'N/A')
+    new_priority = get_cvss_priority(new_version or 'N/A')
+    
+    existing_score = float(existing_score or 0)
+    new_score = float(new_score or 0)
+    
+    # If new version is better (higher priority), use it
+    if new_priority > existing_priority:
+        return new_score, new_version
+    # If same priority, use max score
+    elif new_priority == existing_priority and new_score > existing_score:
+        return new_score, new_version
+    # Otherwise keep existing
+    else:
+        return existing_score, existing_version
+
+
 def extract_cvss_metrics(cve_data):
     """
-    Extract CVSS metrics with priority: 4.0 > 4.1 > 3.1 > 3.0 > 2.0
+    Extract CVSS metrics with priority: 4.1 > 4.0 > 3.1 > 3.0 > 2.0
     Returns: (severity, score, cvss_version)
     """
     severity = "MEDIUM"
@@ -1334,21 +1438,8 @@ def extract_cvss_metrics(cve_data):
     
     metrics = cve_data.get('metrics', {})
     
-    # 1. PRIORITÉ MAX: CVSS 4.0
-    if 'cvssMetricV40' in metrics and metrics['cvssMetricV40']:
-        try:
-            cvss_data = metrics['cvssMetricV40'][0]['cvssData']
-            score = cvss_data.get('baseScore', 5.0)
-            base_severity = cvss_data.get('baseSeverity', 'MEDIUM')
-            if base_severity:
-                severity = base_severity.upper()
-            cvss_version = '4.0'
-            logger.info(f"✅ Using CVSS 4.0 for CVE: score={score}, severity={severity}")
-        except Exception as e:
-            logger.warning(f"Error parsing CVSS 4.0: {e}")
-    
-    # 2. PRIORITÉ: CVSS 4.1 (si disponible)
-    elif 'cvssMetricV41' in metrics and metrics['cvssMetricV41']:
+    # 1. PRIORITÉ MAX: CVSS 4.1
+    if 'cvssMetricV41' in metrics and metrics['cvssMetricV41']:
         try:
             cvss_data = metrics['cvssMetricV41'][0]['cvssData']
             score = cvss_data.get('baseScore', 5.0)
@@ -1359,6 +1450,19 @@ def extract_cvss_metrics(cve_data):
             logger.info(f"✅ Using CVSS 4.1 for CVE: score={score}, severity={severity}")
         except Exception as e:
             logger.warning(f"Error parsing CVSS 4.1: {e}")
+    
+    # 2. PRIORITÉ: CVSS 4.0 (si pas de 4.1)
+    elif 'cvssMetricV40' in metrics and metrics['cvssMetricV40']:
+        try:
+            cvss_data = metrics['cvssMetricV40'][0]['cvssData']
+            score = cvss_data.get('baseScore', 5.0)
+            base_severity = cvss_data.get('baseSeverity', 'MEDIUM')
+            if base_severity:
+                severity = base_severity.upper()
+            cvss_version = '4.0'
+            logger.info(f"✅ Using CVSS 4.0 for CVE: score={score}, severity={severity}")
+        except Exception as e:
+            logger.warning(f"Error parsing CVSS 4.0: {e}")
     
     # 3. PRIORITÉ: CVSS 3.1
     elif 'cvssMetricV31' in metrics and metrics['cvssMetricV31']:
@@ -1413,6 +1517,74 @@ def extract_cvss_metrics(cve_data):
     return severity, score, cvss_version
 
 # ========== IMPORT SERVICES ==========
+def import_new_cves_from_cveorg_api():
+    """Import NEW CVEs from CVE.org API as PRIMARY source (NOTE: This is disabled - no public API for bulk CVE import)
+    
+    CVE.org doesn't provide a public API for bulk CVE import, so this function is kept for reference.
+    Instead, we use the enhancement function below to add product data to existing CVEs.
+    """
+    logger.info("⚠️ CVE.org bulk import: Using enhancement instead (no public bulk import API)")
+    return {'imported': 0, 'source': 'CVEORG_ENHANCEMENT'}
+
+
+def merge_cve_from_sources(cve_id: str, source: str, cve_data: dict):
+    """Merge CVE data from multiple sources
+    
+    If CVE exists:
+    - Keep the highest CVSS score
+    - Keep CVE.org dates as reference
+    - Add source to sources_secondary
+    """
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # Check if CVE exists
+        cursor.execute("SELECT id, cvss_score, source FROM cves WHERE cve_id = ?", (cve_id,))
+        existing = cursor.fetchone()
+        
+        if existing:
+            existing_score = existing['cvss_score'] or 0
+            new_score = cve_data.get('cvss_score', 0)
+            
+            # Use higher score
+            final_score = max(existing_score, new_score)
+            
+            # Get CVE.org data if not already set
+            if existing['source'] != 'CVEORG' and source == 'CVEORG':
+                # Update with CVE.org as primary
+                cursor.execute('''
+                    UPDATE cves 
+                    SET source = ?, cvss_score = ?, 
+                        published_date = COALESCE(?, published_date),
+                        last_updated = COALESCE(?, last_updated)
+                    WHERE cve_id = ?
+                ''', (
+                    'CVEORG',
+                    final_score,
+                    cve_data.get('published_date'),
+                    cve_data.get('last_updated'),
+                    cve_id
+                ))
+            else:
+                # Just update score if higher
+                if new_score > existing_score:
+                    cursor.execute("UPDATE cves SET cvss_score = ? WHERE cve_id = ?", 
+                                 (new_score, cve_id))
+            
+            # Add to secondary sources
+            cursor.execute('''
+                INSERT INTO cve_sources (cve_id, source_name, added_at)
+                VALUES (?, ?, datetime('now'))
+            ''', (existing['id'], source))
+        
+        conn.commit()
+        conn.close()
+        
+    except Exception as e:
+        logger.debug(f"Could not merge {cve_id} from {source}: {e}")
+
+
 def import_from_nvd():
     """Import CVEs from NVD API"""
     logger.info("🚀 Starting NVD import with intelligent product extraction...")
@@ -1480,6 +1652,17 @@ def import_from_nvd():
                 else:
                     published_date = None
                 
+                # Extract last modified date (if available in API response)
+                last_modified_raw = cve_data.get('lastModified', '') or published_date_raw
+                if last_modified_raw:
+                    formatted_last_mod = format_date_for_display(last_modified_raw)
+                    if formatted_last_mod.get('iso_utc') and formatted_last_mod['iso_utc'] != 'Invalid Date':
+                        last_modified_date = formatted_last_mod['iso_utc']
+                    else:
+                        last_modified_date = last_modified_raw.replace('T', ' ').split('.')[0] if last_modified_raw else published_date
+                else:
+                    last_modified_date = published_date
+                
                 # Get products list (may contain multiple vendor/product tuples)
                 product_list = get_products_for_cve(cve_data)
 
@@ -1521,7 +1704,7 @@ def import_from_nvd():
                     cvss_version,
                     published_date,
                     imported_at,
-                    imported_at,
+                    last_modified_date or imported_at,
                     'NVD'
                 ))
                 # Insert each unique product for this CVE (avoid duplicates)
@@ -1679,6 +1862,10 @@ def import_from_cvedetails():
         
         logger.info(f"📊 Found {len(cves_list)} important CVEs from CVE Details")
         
+        # Debug: log first CVE structure to see available fields
+        if cves_list:
+            logger.info(f"🔍 Sample CVE Details response structure: {list(cves_list[0].keys())}")
+        
         for cve_data in cves_list:
             try:
                 # Extract CVE ID - CVE Details API returns 'cveId' field (camelCase)
@@ -1695,30 +1882,35 @@ def import_from_cvedetails():
                 if not cve_id.startswith('CVE-'):
                     cve_id = f"CVE-{cve_id}"
                 
-                # Check if CVE already exists
-                cursor.execute("SELECT id, source FROM cves WHERE cve_id = ?", (cve_id,))
-                existing = cursor.fetchone()
-                
-                # Extract CVSS score (CVE Details API doesn't always include CVSS in search results)
+                # Extract CVSS score from CVEdetails - try different CVSS versions in priority order
                 cvss_score = 0
-                if 'cvss' in cve_data:
-                    if isinstance(cve_data['cvss'], dict):
-                        cvss_score = float(cve_data['cvss'].get('score', 0) or 0)
-                    else:
-                        try:
-                            cvss_score = float(cve_data['cvss'] or 0)
-                        except (ValueError, TypeError):
-                            cvss_score = 0
-                elif 'cvss_score' in cve_data:
+                cvss_version = 'N/A'
+                
+                # CVEdetails API provides maxCvssBaseScorev4, v3, v2 fields
+                # Priority: 4 > 3 > 2
+                if 'maxCvssBaseScorev4' in cve_data and cve_data['maxCvssBaseScorev4']:
                     try:
-                        cvss_score = float(cve_data['cvss_score'] or 0)
+                        cvss_score = float(cve_data['maxCvssBaseScorev4'])
+                        cvss_version = '4.0'
                     except (ValueError, TypeError):
-                        cvss_score = 0
-                elif 'cvssScore' in cve_data:  # Try camelCase version
+                        pass
+                
+                if cvss_score == 0 and 'maxCvssBaseScorev3' in cve_data and cve_data['maxCvssBaseScorev3']:
                     try:
-                        cvss_score = float(cve_data['cvssScore'] or 0)
+                        cvss_score = float(cve_data['maxCvssBaseScorev3'])
+                        cvss_version = '3.1'
                     except (ValueError, TypeError):
-                        cvss_score = 0
+                        pass
+                
+                if cvss_score == 0 and 'maxCvssBaseScorev2' in cve_data and cve_data['maxCvssBaseScorev2']:
+                    try:
+                        cvss_score = float(cve_data['maxCvssBaseScorev2'])
+                        cvss_version = '2.0'
+                    except (ValueError, TypeError):
+                        pass
+                
+                if cvss_score > 0:
+                    logger.debug(f"   ✅ Got CVSS {cvss_version}/{cvss_score} from CVEdetails")
                 
                 severity = _get_severity_from_cvss(cvss_score)
                 
@@ -1739,9 +1931,20 @@ def import_from_cvedetails():
                 published = (cve_data.get('publishDate') or cve_data.get('published_date') or 
                             cve_data.get('published') or cve_data.get('date'))
                 
+                # Check if CVE already exists
+                cursor.execute("SELECT id, source FROM cves WHERE cve_id = ?", (cve_id,))
+                existing = cursor.fetchone()
+                
                 # If CVE already exists, update source to include 'cvedetails'
                 if existing:
                     existing_id, existing_source = existing
+                    
+                    # Get existing CVSS score to compare
+                    cursor.execute("SELECT cvss_score, cvss_version FROM cves WHERE id = ?", (existing_id,))
+                    existing_cve = cursor.fetchone()
+                    existing_score = existing_cve['cvss_score'] if existing_cve else 0
+                    existing_version = existing_cve['cvss_version'] if existing_cve else 'N/A'
+                    
                     # Build combined source list
                     sources = set()
                     if existing_source:
@@ -1749,29 +1952,45 @@ def import_from_cvedetails():
                     sources.add('cvedetails')
                     combined_source = ','.join(sorted(sources))
                     
-                    # Update the existing CVE with combined source
+                    # Use best version/score combination
+                    # IMPORTANT: If CVEdetails has no score (0), prefer existing score
+                    best_score, best_version = compare_cvss(
+                        float(existing_score or 0), existing_version,
+                        float(cvss_score or 0) if cvss_score > 0 else 0, cvss_version  # Only use CVEdetails score if it's > 0
+                    )
+                    
+                    # If we still have no score, keep existing (don't overwrite with 0)
+                    if best_score == 0 and existing_score > 0:
+                        best_score = existing_score
+                        best_version = existing_version
+                    
                     cursor.execute("""
-                        UPDATE cves SET source = ?, cvss_score = ? WHERE id = ?
-                    """, (combined_source, cvss_score, existing_id))
-                    logger.info(f"✅ Updated {cve_id} source to: {combined_source}")
+                        UPDATE cves SET source = ?, cvss_score = ?, cvss_version = ? WHERE id = ?
+                    """, (combined_source, best_score, best_version, existing_id))
+                    
+                    if best_score > float(existing_score or 0) or get_cvss_priority(best_version) > get_cvss_priority(existing_version):
+                        logger.info(f"✅ Updated {cve_id} source to: {combined_source}, CVSS: {existing_version} {existing_score} → {best_version} {best_score}")
+                    else:
+                        logger.info(f"✅ Updated {cve_id} source to: {combined_source}")
                 else:
                     # Insert new CVE
                     imported_at = datetime.utcnow().isoformat()
                     cursor.execute("""
                         INSERT INTO cves (
-                            cve_id, description, severity, cvss_score, 
+                            cve_id, description, severity, cvss_score, cvss_version,
                             published_date, source, imported_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """, (
                         cve_id,
                         description[:2000] if description else '',
                         severity,
                         cvss_score,
+                        cvss_version,  # Use detected CVSS version from detail API
                         published or datetime.utcnow().isoformat(),
                         'cvedetails',
                         imported_at
                     ))
-                    logger.info(f"✅ Added {cve_id} with {len(products)} products (CVSS: {cvss_score})")
+                    logger.info(f"✅ Added {cve_id} with {len(products)} products (CVSS: {cvss_version}/{cvss_score})")
                     
                     # Insert affected products
                     for product in products:
@@ -1801,7 +2020,25 @@ def import_from_cvedetails():
                 imported_count += 1
                 
             except Exception as e:
-                logger.error(f"❌ Error processing CVE Details entry: {str(e)}", exc_info=True)
+                error_str = str(e).lower()
+                if 'database is locked' in error_str:
+                    # Database is locked by another thread - retry with exponential backoff
+                    logger.debug(f"⏳ Database locked for {cve_id}, retrying...")
+                    time.sleep(0.5)  # Wait 500ms before retrying
+                    try:
+                        # Retry the operation
+                        cursor.execute("SELECT id, source FROM cves WHERE cve_id = ?", (cve_id,))
+                        existing = cursor.fetchone()
+                        if existing:
+                            existing_id, existing_source = existing
+                            cursor.execute("SELECT cvss_score, cvss_version FROM cves WHERE id = ?", (existing_id,))
+                            existing_cve = cursor.fetchone()
+                            if existing_cve:
+                                logger.debug(f"✅ Retry successful for {cve_id}")
+                    except Exception as retry_e:
+                        logger.debug(f"⚠️ Retry also failed for {cve_id}: {str(retry_e)}")
+                else:
+                    logger.error(f"❌ Error processing CVE Details entry: {str(e)}", exc_info=True)
                 continue
         
         conn.commit()
@@ -1831,128 +2068,33 @@ def import_from_cvedetails():
 def import_from_cveorg():
     """
     Import CVEs from official CVE.org (MITRE) with precise vendor/product info
-    Uses the CVE.org REST API to get accurate affected products
+    Uses the CVE.org REST API to get accurate affected products and dates
+    REPLACES all products with official MITRE data, UPDATES dates from authoritative source
+    
+    Uses the new CVEEnrichmentService for optimized enrichment
     """
-    logger.info("🚀 Starting CVE.org import from official MITRE API...")
-    start_time = time.time()
+    logger.info("🚀 Starting CVE.org enhancement - REPLACING products with official MITRE data...")
     
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
+        # Utiliser le nouveau service d'enrichissement (limite à 100 CVEs par run)
+        stats = CVEEnrichmentService.enrich_all_pending_cves(limit=100)
         
-        imported_count = 0
-        duplicate_count = 0
+        logger.info(f"✅ CVE.org enhancement completed in {stats['duration']}s")
+        logger.info(f"📊 Enhanced {stats['total_products_added']} products, "
+                   f"{stats['total_dates_updated']} dates updated, "
+                   f"{stats['total_errors']} errors")
         
-        # Get list of CVE IDs from database that we need to enhance
-        # Prioritize CVEs without affected_products or with only "Unknown/Multiple Products"
-        cursor.execute('''
-            SELECT DISTINCT cves.cve_id 
-            FROM cves
-            LEFT JOIN affected_products ON cves.cve_id = affected_products.cve_id
-            WHERE 
-                (affected_products.id IS NULL 
-                 OR (affected_products.product = "Multiple Products" AND cves.cve_id NOT IN (
-                    SELECT cve_id FROM affected_products WHERE product != "Multiple Products"
-                 )))
-            ORDER BY cves.imported_at DESC
-            LIMIT 50
-        ''')
-        
-        cve_ids_to_fetch = [row['cve_id'] for row in cursor.fetchall()]
-        logger.info(f"📊 Found {len(cve_ids_to_fetch)} CVEs to enhance from CVE.org")
-        
-        if not cve_ids_to_fetch:
-            logger.info("✅ All CVEs already have proper affected products")
-            conn.close()
-            return {'imported': 0, 'source': 'cveorg'}
-        
-        # Fetch each CVE from CVE.org API
-        for cve_id in cve_ids_to_fetch:
-            try:
-                # CVE.org API endpoint
-                url = f"https://cveawg.mitre.org/api/cve/{cve_id}"
-                response = requests.get(url, timeout=10)
-                
-                if response.status_code != 200:
-                    continue
-                
-                data = response.json()
-                
-                # Extract affected products from CVE.org format
-                # Structure: containers.cna.affected[].{vendor, product}
-                containers = data.get('containers', {})
-                cna = containers.get('cna', {})
-                affected_list = cna.get('affected', [])
-                
-                if not affected_list:
-                    continue
-                
-                # Remove old "Unknown/Multiple Products" entries for this CVE
-                cursor.execute('''
-                    DELETE FROM affected_products 
-                    WHERE cve_id = ? AND product = "Multiple Products"
-                ''', (cve_id,))
-                
-                # Insert new products from CVE.org
-                for affected in affected_list:
-                    vendor = affected.get('vendor', '').strip()
-                    product = affected.get('product', '').strip()
-                    
-                    # Validate product information
-                    if not vendor or not product:
-                        continue
-                    
-                    # Skip if product looks like noise
-                    if len(vendor) > 100 or len(product) > 100:
-                        continue
-                    
-                    # Check if already exists
-                    cursor.execute('''
-                        SELECT 1 FROM affected_products 
-                        WHERE cve_id = ? AND vendor = ? AND product = ?
-                    ''', (cve_id, vendor, product))
-                    
-                    if cursor.fetchone():
-                        duplicate_count += 1
-                        continue
-                    
-                    # Insert new product
-                    cursor.execute('''
-                        INSERT INTO affected_products (cve_id, vendor, product, confidence)
-                        VALUES (?, ?, ?, ?)
-                    ''', (cve_id, vendor, product, 1.0))  # Confidence 1.0 for official source
-                    
-                    imported_count += 1
-                
-                # Update CVE source to include cveorg if not already present
-                cursor.execute('SELECT source FROM cves WHERE cve_id = ?', (cve_id,))
-                row = cursor.fetchone()
-                if row:
-                    current_source = row['source'] or ''
-                    if 'cveorg' not in current_source.lower():
-                        new_source = f"{current_source},cveorg" if current_source else "cveorg"
-                        cursor.execute('UPDATE cves SET source = ? WHERE cve_id = ?', (new_source, cve_id))
-                        logger.info(f"✅ Updated {cve_id} source to: {new_source}")
-                
-            except requests.exceptions.Timeout:
-                logger.warning(f"⏱️ Timeout fetching {cve_id} from CVE.org")
-                continue
-            except Exception as e:
-                logger.debug(f"⚠️ Error processing {cve_id} from CVE.org: {str(e)[:100]}")
-                continue
-        
-        conn.commit()
-        conn.close()
-        
-        elapsed = time.time() - start_time
-        logger.info(f"✅ CVE.org import completed in {elapsed:.2f}s")
-        logger.info(f"📊 Imported {imported_count} product affiliations from CVE.org (duplicates: {duplicate_count})")
-        
-        return {'imported': imported_count, 'source': 'cveorg'}
+        return {
+            'imported': stats['total_products_added'],
+            'updated': stats['total_dates_updated'],
+            'source': 'cveorg',
+            'processed': stats['total_processed'],
+            'errors': stats['total_errors']
+        }
         
     except Exception as e:
-        logger.error(f"⚠️ CVE.org import failed: {str(e)}")
-        return {'imported': 0, 'source': 'cveorg'}
+        logger.error(f"⚠️ CVE.org enhancement failed: {str(e)}")
+        return {'imported': 0, 'source': 'cveorg', 'error': str(e)}
 
 def import_from_msrc():
     """Import CVEs from Microsoft Security Response Center CVRF API"""
@@ -2202,68 +2344,119 @@ def start_import_scheduler():
     logger.info("Starting import scheduler (every 30 minutes)...")
     
     # Run import immediately
-    # Use orchestrator to run all importers
+    # ✅ CORRECTION: Utiliser la nouvelle API multi-sources
     def run_importers():
-        """Run all enabled CVE importers in sequence"""
-        results = {}
-        
-        # NVD - Primary source
+        """Run multi-source CVE import using the new API service"""
         try:
-            logger.info("⏳ Running NVD importer...")
-            import_from_nvd()
-            results['nvd'] = 'success'
+            logger.info("⏳ Exécution de l'import multi-sources automatique...")
+            from services.cve_fetcher_service import CVEFetcherService
+            import sqlite3
+            from datetime import datetime
+            import pytz
+            
+            # Récupérer depuis toutes les sources
+            all_sources_data = CVEFetcherService.fetch_all_sources(days=7, limit=200)
+            cves = all_sources_data.get("all", [])
+            
+            if not cves:
+                logger.info("ℹ️ Aucun nouveau CVE à importer")
+                return
+            
+            # Import dans la base de données
+            conn = sqlite3.connect(DB_FILE)
+            cursor = conn.cursor()
+            
+            imported = 0
+            updated = 0
+            
+            for cve in cves:
+                cve_id = cve['cve_id']
+                source = cve.get('source', 'Unknown')
+                
+                try:
+                    cursor.execute("SELECT id, cvss_score, source FROM cves WHERE cve_id = ?", (cve_id,))
+                    existing = cursor.fetchone()
+                    
+                    if existing:
+                        existing_score = existing[1] if existing[1] else 0
+                        new_score = cve.get('cvss_score', 0)
+                        
+                        if new_score > existing_score:
+                            cursor.execute("""
+                                UPDATE cves
+                                SET cvss_score = ?, cvss_version = ?, severity = ?, 
+                                    description = ?, last_updated = ?, source = ?
+                                WHERE cve_id = ?
+                            """, (
+                                new_score,
+                                cve.get('cvss_version', 'N/A'),
+                                cve.get('severity', 'UNKNOWN'),
+                                cve.get('description', '')[:2000],
+                                datetime.now(pytz.UTC).isoformat(),
+                                source,
+                                cve_id
+                            ))
+                            updated += 1
+                    else:
+                        imported_at = datetime.now(pytz.UTC).isoformat().replace('+00:00', 'Z')
+                        
+                        cursor.execute('''
+                            INSERT INTO cves 
+                            (cve_id, description, severity, cvss_score, cvss_version, 
+                             published_date, imported_at, last_updated, source, status)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ''', (
+                            cve_id,
+                            cve.get('description', '')[:2000],
+                            cve.get('severity', 'UNKNOWN'),
+                            cve.get('cvss_score', 0),
+                            cve.get('cvss_version', 'N/A'),
+                            cve.get('published_date', ''),
+                            imported_at,
+                            cve.get('last_updated', imported_at),
+                            source,
+                            'PENDING'
+                        ))
+                        
+                        # Produits affectés
+                        for product in cve.get('affected_products', [])[:10]:
+                            vendor = product.get('vendor', 'Unknown')[:50]
+                            product_name = product.get('product', 'Multiple Products')[:50]
+                            confidence = product.get('confidence', 0.0)
+                            
+                            if vendor and product_name:
+                                cursor.execute('''
+                                    INSERT OR IGNORE INTO affected_products 
+                                    (cve_id, vendor, product, confidence)
+                                    VALUES (?, ?, ?, ?)
+                                ''', (cve_id, vendor, product_name, confidence))
+                        
+                        imported += 1
+                    
+                    conn.commit()
+                    
+                except Exception as e:
+                    logger.error(f"❌ Erreur import {cve_id}: {str(e)}")
+                    continue
+            
+            conn.close()
+            
+            logger.info(f"📊 Import automatique terminé: {imported} importés, {updated} mis à jour")
+            
+            # 🚀 Enrichir les CVEs avec CVE.org après l'import
+            try:
+                logger.info("🔄 Démarrage enrichissement CVE.org automatique...")
+                enrich_stats = CVEEnrichmentService.enrich_all_pending_cves(limit=50)
+                logger.info(f"✅ Enrichissement terminé: {enrich_stats['total_products_added']} produits, "
+                          f"{enrich_stats['total_dates_updated']} dates mises à jour")
+            except Exception as enrich_error:
+                logger.error(f"⚠️ Erreur enrichissement CVE.org: {str(enrich_error)}")
+            
         except Exception as e:
-            logger.error(f"❌ NVD importer failed: {e}")
-            results['nvd'] = 'failed'
-        
-        # CVE Details
-        try:
-            logger.info("⏳ Running CVE Details importer...")
-            import_from_cvedetails()
-            results['cvedetails'] = 'success'
-        except Exception as e:
-            logger.warning(f"⚠️ CVE Details importer failed: {e}")
-            results['cvedetails'] = 'failed'
-        
-        # CVE.org (Enhance products with official MITRE data)
-        try:
-            logger.info("⏳ Running CVE.org importer...")
-            import_from_cveorg()
-            results['cveorg'] = 'success'
-        except Exception as e:
-            logger.warning(f"⚠️ CVE.org importer failed: {e}")
-            results['cveorg'] = 'failed'
-        
-        # MSRC
-        try:
-            logger.info("⏳ Running MSRC importer...")
-            import_from_msrc()
-            results['msrc'] = 'success'
-        except Exception as e:
-            logger.warning(f"⚠️ MSRC importer failed: {e}")
-            results['msrc'] = 'failed'
-        
-        # Hackuity
-        try:
-            logger.info("⏳ Running Hackuity importer...")
-            import_from_hackuity()
-            results['hackuity'] = 'success'
-        except Exception as e:
-            logger.warning(f"⚠️ Hackuity importer failed: {e}")
-            results['hackuity'] = 'failed'
-        
-        # Manual Entries
-        try:
-            logger.info("⏳ Processing manual CVE entries...")
-            import_manual_entries()
-            results['manual'] = 'success'
-        except Exception as e:
-            logger.warning(f"⚠️ Manual CVE processing failed: {e}")
-            results['manual'] = 'failed'
-        
-        logger.info(f"📊 Import cycle complete: {results}")
+            logger.error(f"❌ Erreur lors de l'import automatique: {e}")
 
-    run_importers()
+    # Premier import au démarrage (optionnel - décommenter si souhaité)
+    # run_importers()
     
     # Schedule future imports
     schedule.every(30).minutes.do(run_importers)
@@ -2445,25 +2638,59 @@ async def get_cves(
     Get CVEs with filtering options - CORRIGÉ
     """
     try:
-        # If force_refresh is requested, run importers immediately
+        # If force_refresh is requested, run importers in background
         if force_refresh:
-            logger.info("🔄 Force refresh requested - running all importers immediately...")
+            logger.info("🔄 Force refresh requested - importing from all sources...")
             try:
-                # Run all importers in parallel for speed
-                import_from_nvd()
-                import_from_cvedetails()
-                import_from_cveorg()
-                logger.info("✅ Force refresh completed successfully")
+                # Import synchrone pour avoir les résultats immédiatement
+                import_stats = {
+                    'nvd': 0,
+                    'cvedetails': 0,
+                    'cveorg': 0
+                }
+                
+                # Import NVD
+                try:
+                    nvd_result = import_from_nvd()
+                    import_stats['nvd'] = nvd_result.get('imported', 0)
+                except Exception as e:
+                    logger.warning(f"⚠️ Erreur import NVD: {str(e)[:100]}")
+                
+                # Import CVEdetails
+                try:
+                    cvedetails_result = import_from_cvedetails()
+                    import_stats['cvedetails'] = cvedetails_result.get('imported', 0)
+                except Exception as e:
+                    logger.warning(f"⚠️ Erreur import CVEdetails: {str(e)[:100]}")
+                
+                # Enrichissement CVE.org (limite à 50 pour ne pas bloquer)
+                try:
+                    cveorg_result = import_from_cveorg()
+                    import_stats['cveorg'] = cveorg_result.get('imported', 0)
+                except Exception as e:
+                    logger.warning(f"⚠️ Erreur enrichissement CVE.org: {str(e)[:100]}")
+                
+                total = sum(import_stats.values())
+                logger.info(f"✅ Force refresh terminé: {total} CVEs importés/enrichis (NVD:{import_stats['nvd']}, CVEdetails:{import_stats['cvedetails']}, CVE.org:{import_stats['cveorg']})")
             except Exception as e:
                 logger.warning(f"⚠️ Force refresh encountered errors: {e}")
-                # Don't fail the request if importers fail, just log it
         
         conn = get_db_connection()
         cursor = conn.cursor()
         
         # Build query
-        query = "SELECT * FROM cves WHERE 1=1"
+        query = "SELECT id, cve_id, description, severity, cvss_score, cvss_version, published_date, status, analyst, decision_date, decision_comments, imported_at, last_updated, source as source_primary, NULL as sources_secondary FROM cves WHERE 1=1"
         params = []
+        
+        # ✅ CORRECTION: Filtrer sur les 7 derniers jours au lieu de 24h
+        # pour afficher les CVEs récemment importés
+        from datetime import datetime, timedelta
+        now_utc = datetime.utcnow()
+        days_7_ago = now_utc - timedelta(days=7)
+        cutoff_date = days_7_ago.strftime('%Y-%m-%dT%H:%M:%S')
+        
+        query += " AND published_date >= ?"
+        params.append(cutoff_date)
 
         # Status filter
         if status and status in ['PENDING', 'ACCEPTED', 'REJECTED', 'DEFERRED']:
@@ -2478,8 +2705,8 @@ async def get_cves(
             query += " AND severity = ?"
             params.append(severity)
         else:
-            # Default to HIGH and MEDIUM
-            query += " AND severity IN ('CRITICAL','HIGH','MEDIUM')"
+            # ✅ Par défaut: afficher CRITICAL et HIGH uniquement
+            query += " AND severity IN ('CRITICAL', 'HIGH')"
 
         # Vendor/Product filtering
         if vendor:
@@ -2506,6 +2733,21 @@ async def get_cves(
                 cve = dict(row)
                 cve_id = cve['cve_id']
                 
+                # Parse sources: if source is "NVD,cvedetails", primary=NVD, secondary=[cvedetails]
+                source_str = cve.get('source_primary', '')
+                if source_str and ',' in source_str:
+                    sources_list = source_str.split(',')
+                    cve['source_primary'] = sources_list[0]  # First is primary
+                    # Create secondary sources list
+                    cve['sources_secondary'] = [
+                        {'name': s.strip(), 'type': 'secondary', 'added_at': cve.get('imported_at', 'N/A')}
+                        for s in sources_list[1:]
+                    ]
+                else:
+                    # Single source - just primary
+                    cve['source_primary'] = source_str
+                    cve['sources_secondary'] = []
+                
                 # ⚠️ CRÉEZ UN NOUVEAU CURSEUR POUR LA SOUS-REQUÊTE ⚠️
                 cursor2 = conn.cursor()
                 cursor2.execute('''
@@ -2526,6 +2768,55 @@ async def get_cves(
                     cve['affected_products'] = products_list
                 else:
                     cve['affected_products'] = [{'vendor': 'Unknown', 'product': 'Multiple Products', 'confidence': 0.0}]
+                
+                # 🔄 ENRICHISSEMENT À LA VOLÉE : Si pas de produits ou produits suspects, enrichir avec CVE.org
+                should_enrich = False
+                source_primary = cve.get('source_primary', '')
+                
+                # Vérifier si le CVE n'a pas encore été enrichi avec CVE.org
+                if 'cveorg' not in source_primary.lower():
+                    # Cas 1: Pas de produits du tout
+                    if not products_list or (len(products_list) == 1 and products_list[0]['vendor'] == 'Unknown'):
+                        should_enrich = True
+                    # Cas 2: Produits suspects (URLs, WWW, etc.)
+                    elif any('www.' in p['vendor'].lower() or 'http' in p['vendor'].lower() or 
+                            'www.' in p['product'].lower() or 'advisories' in p['product'].lower() 
+                            for p in products_list):
+                        should_enrich = True
+                
+                # Enrichir si nécessaire
+                if should_enrich:
+                    try:
+                        from services.cve_enrichment_service import CVEEnrichmentService
+                        
+                        # Enrichir en temps réel (avec un curseur de connexion séparé)
+                        conn_enrich = get_db_connection()
+                        enrich_stats = CVEEnrichmentService.enrich_single_cve(cve_id, conn_enrich)
+                        conn_enrich.close()
+                        
+                        # Si enrichissement réussi, recharger les produits
+                        if enrich_stats['products_added'] > 0:
+                            cursor2.execute('''
+                                SELECT vendor, product, confidence 
+                                FROM affected_products 
+                                WHERE cve_id = ?
+                            ''', (cve_id,))
+                            enriched_rows = cursor2.fetchall()
+                            
+                            if enriched_rows:
+                                products_list = []
+                                for r in enriched_rows:
+                                    products_list.append({
+                                        'vendor': r['vendor'], 
+                                        'product': r['product'], 
+                                        'confidence': float(r['confidence'] or 0.0)
+                                    })
+                                cve['affected_products'] = products_list
+                                logger.info(f"✅ Enrichi à la volée: {cve_id} ({enrich_stats['products_added']} produits)")
+                    except Exception as enrich_error:
+                        # Ne pas bloquer l'affichage si l'enrichissement échoue
+                        logger.debug(f"⚠️ Enrichissement à la volée échoué pour {cve_id}: {str(enrich_error)[:100]}")
+                        pass
 
                 # Add a short summary
                 cve['short_description'] = (cve.get('description') or '')[:300]
@@ -2543,6 +2834,46 @@ async def get_cves(
                         cve['published_date_formatted'] = cve['published_date'].replace('T', ' ')
                 else:
                     cve['published_date_formatted'] = 'N/A'
+                
+                # Format last_updated date
+                if cve.get('last_updated'):
+                    try:
+                        formatted_date = format_date_for_display(cve['last_updated'])
+                        cve['last_updated_formatted'] = formatted_date.get('formatted', 'N/A')
+                    except Exception as e:
+                        logger.warning(f"Error formatting last_updated for CVE {cve_id}: {e}")
+                        cve['last_updated_formatted'] = cve['last_updated'].replace('T', ' ')
+                else:
+                    cve['last_updated_formatted'] = 'N/A'
+                
+                # Build sources list (primary + all secondaries)
+                sources_list = []
+                primary = cve.get('source_primary', 'unknown')
+                if primary:
+                    sources_list.append({
+                        'name': primary,
+                        'type': 'primary',
+                        'added_at': cve.get('imported_at', 'N/A')
+                    })
+                
+                # Parse and add secondary sources
+                secondaries = cve.get('sources_secondary')
+                if secondaries:
+                    try:
+                        import json
+                        if isinstance(secondaries, str):
+                            secondaries = json.loads(secondaries)
+                        if isinstance(secondaries, list):
+                            for src in secondaries:
+                                sources_list.append({
+                                    'name': src.get('name', 'unknown'),
+                                    'type': 'secondary',
+                                    'added_at': src.get('added_at', 'N/A')
+                                })
+                    except Exception as e:
+                        logger.debug(f"Error parsing sources_secondary for {cve_id}: {e}")
+                
+                cve['sources_list'] = sources_list
                 
                 cves.append(cve)
                 
@@ -3331,6 +3662,215 @@ async def trigger_import(background_tasks: BackgroundTasks):
         "message": "Import triggered in background",
         "timestamp": datetime.now().isoformat()
     }
+
+
+@app.post("/api/import/all-sources")
+async def import_from_all_sources(
+    days: int = Query(default=7, ge=1, le=30, description="Nombre de jours à importer"),
+    enrich: bool = Query(default=True, description="Enrichir avec CVE.org après l'import")
+):
+    """
+    Importe les CVEs récents depuis TOUTES les sources (NVD, CVEdetails, CVE.org)
+    et retourne les CVEs importés
+    
+    Args:
+        days: Nombre de jours précédents à importer (défaut: 7)
+        enrich: Enrichir automatiquement avec CVE.org (défaut: true)
+    
+    Returns:
+        Statistiques d'import et liste des CVEs importés
+    """
+    try:
+        logger.info(f"🚀 Import multi-sources demandé (days={days}, enrich={enrich})")
+        
+        import_stats = {
+            'nvd': {'imported': 0, 'updated': 0, 'errors': 0},
+            'cvedetails': {'imported': 0, 'updated': 0, 'errors': 0},
+            'cveorg_enrichment': {'products_added': 0, 'dates_updated': 0, 'processed': 0, 'errors': 0},
+            'total_imported': 0,
+            'total_updated': 0,
+            'duration': 0
+        }
+        
+        start_time = time.time()
+        
+        # 1. Import depuis NVD (source principale)
+        logger.info("📡 Import depuis NVD...")
+        try:
+            nvd_result = import_from_nvd()
+            import_stats['nvd']['imported'] = nvd_result.get('imported', 0)
+            import_stats['nvd']['updated'] = nvd_result.get('updated', 0)
+            import_stats['total_imported'] += import_stats['nvd']['imported']
+            import_stats['total_updated'] += import_stats['nvd']['updated']
+            logger.info(f"✅ NVD: {import_stats['nvd']['imported']} importés, {import_stats['nvd']['updated']} mis à jour")
+        except Exception as e:
+            logger.error(f"❌ Erreur import NVD: {str(e)}")
+            import_stats['nvd']['errors'] = 1
+        
+        # 2. Import depuis CVEdetails (source secondaire)
+        logger.info("📡 Import depuis CVEdetails...")
+        try:
+            cvedetails_result = import_from_cvedetails()
+            import_stats['cvedetails']['imported'] = cvedetails_result.get('imported', 0)
+            import_stats['cvedetails']['updated'] = cvedetails_result.get('updated', 0)
+            import_stats['total_imported'] += import_stats['cvedetails']['imported']
+            import_stats['total_updated'] += import_stats['cvedetails']['updated']
+            logger.info(f"✅ CVEdetails: {import_stats['cvedetails']['imported']} importés")
+        except Exception as e:
+            logger.error(f"❌ Erreur import CVEdetails: {str(e)}")
+            import_stats['cvedetails']['errors'] = 1
+        
+        # 3. Enrichissement avec CVE.org (si demandé)
+        if enrich:
+            logger.info("🔄 Enrichissement avec CVE.org...")
+            try:
+                cveorg_result = import_from_cveorg()
+                import_stats['cveorg_enrichment']['products_added'] = cveorg_result.get('imported', 0)
+                import_stats['cveorg_enrichment']['dates_updated'] = cveorg_result.get('updated', 0)
+                import_stats['cveorg_enrichment']['processed'] = cveorg_result.get('processed', 0)
+                import_stats['cveorg_enrichment']['errors'] = cveorg_result.get('errors', 0)
+                logger.info(f"✅ CVE.org: {import_stats['cveorg_enrichment']['products_added']} produits enrichis")
+            except Exception as e:
+                logger.error(f"❌ Erreur enrichissement CVE.org: {str(e)}")
+                import_stats['cveorg_enrichment']['errors'] = 1
+        
+        duration = time.time() - start_time
+        import_stats['duration'] = round(duration, 2)
+        
+        # Récupérer les CVEs récemment importés pour les afficher
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT cve_id, description, severity, cvss_score, source, published_date, imported_at
+            FROM cves
+            WHERE status = 'PENDING'
+            AND datetime(imported_at) >= datetime('now', '-' || ? || ' days')
+            ORDER BY imported_at DESC
+            LIMIT 100
+        ''', (days,))
+        
+        recent_cves = []
+        for row in cursor.fetchall():
+            recent_cves.append({
+                'cve_id': row['cve_id'],
+                'description': (row['description'] or '')[:200],
+                'severity': row['severity'],
+                'cvss_score': row['cvss_score'],
+                'source': row['source'],
+                'published_date': row['published_date'],
+                'imported_at': row['imported_at']
+            })
+        
+        conn.close()
+        
+        logger.info(f"✅ Import multi-sources terminé en {duration:.2f}s - {import_stats['total_imported']} nouveaux CVEs")
+        
+        return {
+            "success": True,
+            "message": f"✅ Import multi-sources terminé : {import_stats['total_imported']} nouveaux CVEs importés",
+            "statistics": import_stats,
+            "recent_cves": recent_cves,
+            "total_cves": len(recent_cves),
+            "duration_seconds": duration
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Erreur import multi-sources: {str(e)}")
+        return {
+            "success": False,
+            "message": f"❌ Erreur: {str(e)}",
+            "statistics": import_stats,
+            "recent_cves": [],
+            "total_cves": 0,
+            "duration_seconds": 0
+        }
+
+
+@app.get("/api/import/stats")
+async def get_import_stats():
+    """
+    Récupère les statistiques d'import des CVEs
+    
+    Returns:
+        Statistiques par source et globales
+    """
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # Total CVEs
+        cursor.execute("SELECT COUNT(*) as total FROM cves")
+        total_cves = cursor.fetchone()['total']
+        
+        # CVEs par source
+        cursor.execute("""
+            SELECT source, COUNT(*) as count
+            FROM cves
+            GROUP BY source
+        """)
+        by_source = {}
+        for row in cursor.fetchall():
+            source = row['source'] or 'Unknown'
+            by_source[source] = row['count']
+        
+        # CVEs enrichis avec CVE.org
+        cursor.execute("""
+            SELECT COUNT(*) as count
+            FROM cves
+            WHERE source LIKE '%cveorg%'
+        """)
+        enriched_count = cursor.fetchone()['count']
+        
+        # CVEs récents (7 derniers jours)
+        cursor.execute("""
+            SELECT COUNT(*) as count
+            FROM cves
+            WHERE datetime(imported_at) >= datetime('now', '-7 days')
+        """)
+        recent_count = cursor.fetchone()['count']
+        
+        # CVEs par statut
+        cursor.execute("""
+            SELECT status, COUNT(*) as count
+            FROM cves
+            GROUP BY status
+        """)
+        by_status = {}
+        for row in cursor.fetchall():
+            by_status[row['status']] = row['count']
+        
+        # CVEs par sévérité
+        cursor.execute("""
+            SELECT severity, COUNT(*) as count
+            FROM cves
+            GROUP BY severity
+        """)
+        by_severity = {}
+        for row in cursor.fetchall():
+            by_severity[row['severity']] = row['count']
+        
+        conn.close()
+        
+        return {
+            "success": True,
+            "statistics": {
+                "total_cves": total_cves,
+                "enriched_with_cveorg": enriched_count,
+                "recent_7_days": recent_count,
+                "by_source": by_source,
+                "by_status": by_status,
+                "by_severity": by_severity
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Erreur récupération stats: {str(e)}")
+        return {
+            "success": False,
+            "message": str(e),
+            "statistics": {}
+        }
 
 
 class AuthRequest(BaseModel):
@@ -4566,25 +5106,917 @@ async def get_manual_cves(
         logger.error(f"Error getting manual CVEs: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+# ========== CVE FETCHER API INTEGRATION ==========
+# Import CVE fetcher routes (nouvelles routes pour récupérer CVEs depuis NVD/CVE.org)
+try:
+    from api.cve_routes import router as cve_fetcher_router
+    app.include_router(cve_fetcher_router, tags=["cve-fetcher"])
+    logger.info("✅ CVE Fetcher API routes registered")
+except ImportError as e:
+    logger.warning(f"⚠️ CVE Fetcher routes not available: {e}")
+except Exception as e:
+    logger.error(f"❌ Error registering CVE Fetcher routes: {e}")
+
 # ========== BULLETIN & DELIVERY ENGINE INTEGRATION ==========
-# Import bulletin routes
+# Import bulletin and delivery routes
 try:
     from app.api.bulletin_routes import router as bulletin_router, region_router
-    from app.services.delivery_engine import BulletinDeliveryEngine
-    from app.services.email_service import EmailService
+    from app.api.delivery_routes import router as delivery_router
+    from app.services.enhanced_delivery_engine import EnhancedBulletinDeliveryEngine
+    from app.services.region_mailing_service import RegionMailingService
+    from app.services.audit_logger import AuditLogger
+    from services.email_service import EmailService
     
-    # Register bulletin routes
+    # Register bulletin and delivery routes
     app.include_router(bulletin_router, prefix="/api", tags=["bulletins"])
     app.include_router(region_router, prefix="/api", tags=["regions"])
+    app.include_router(delivery_router, prefix="/api", tags=["delivery", "audit"])
     
-    # Initialize delivery engine (will be started in lifespan)
+    # Initialize services
     delivery_engine = None
+    mailing_service = RegionMailingService()
+    audit_logger = AuditLogger()
     
-    logger.info("✅ Bulletin management routes registered")
+    logger.info("✅ Bulletin management & delivery routes registered")
 except ImportError as e:
     logger.warning(f"⚠️ Bulletin routes not available: {e}")
 except Exception as e:
     logger.error(f"❌ Error registering bulletin routes: {e}")
+
+
+# ============================================================================
+# BULLETIN MANAGEMENT API ENDPOINTS
+# ============================================================================
+@app.post("/api/bulletins", response_model=Dict)
+async def create_bulletin(
+    request: Request,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Create a new bulletin with automatic CVE grouping by technology/product
+    
+    - **title**: Bulletin title
+    - **body**: Optional bulletin body (can include HTML)
+    - **regions**: List of region names (e.g., ["NORAM", "LATAM", "Europe", "APMEA"])
+    - **cve_ids**: Optional list of CVE IDs to include in bulletin
+    """
+    try:
+        # Parse JSON sans validation FastAPI
+        data = await request.json()
+        logger.info(f"📥 Received raw JSON: {data}")
+        logger.info(f"👤 Current user: {current_user}")
+        
+        title = data.get('title')
+        body = data.get('body')
+        regions = data.get('regions', [])
+        cve_ids = data.get('cve_ids', [])
+        
+        logger.info(f"✅ Parsed: title={title}, regions={regions}, cve_ids={cve_ids}")
+        
+        from services.bulletin_service import BulletinService
+        
+        bulletin = BulletinService.create_bulletin(
+            title=title,
+            body=body,
+            regions=regions,
+            cve_ids=cve_ids,
+            created_by=current_user.get('username', 'unknown')
+        )
+        
+        return bulletin
+    
+    except Exception as e:
+        logger.error(f"Error creating bulletin: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/bulletins", response_model=Dict)
+async def get_bulletins(
+    status: Optional[str] = Query(None),
+    region: Optional[str] = Query(None),
+    limit: int = Query(default=100, le=500),
+    offset: int = Query(default=0, ge=0),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Get bulletins with optional filters
+    
+    - **status**: Filter by status (DRAFT, SENT, NOT_PROCESSED)
+    - **region**: Filter by region
+    - **limit**: Max results to return
+    - **offset**: Pagination offset
+    """
+    try:
+        from services.bulletin_service import BulletinService
+        
+        bulletins, total = BulletinService.get_bulletins(
+            status=status,
+            region=region,
+            limit=limit,
+            offset=offset
+        )
+        
+        return {
+            'bulletins': bulletins,
+            'total': total,
+            'limit': limit,
+            'offset': offset
+        }
+    
+    except Exception as e:
+        logger.error(f"Error fetching bulletins: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/bulletins/{bulletin_id}", response_model=Dict)
+async def get_bulletin_detail(
+    bulletin_id: int,
+    current_user: dict = Depends(get_current_user)
+):
+    """Get detailed bulletin with CVEs, grouped CVEs, and attachments"""
+    try:
+        from services.bulletin_service import BulletinService
+        
+        bulletin = BulletinService.get_bulletin_detail(bulletin_id)
+        
+        if not bulletin:
+            raise HTTPException(status_code=404, detail="Bulletin not found")
+        
+        return bulletin
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching bulletin detail: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put("/api/bulletins/{bulletin_id}", response_model=Dict)
+async def update_bulletin(
+    bulletin_id: int,
+    title: Optional[str] = Body(None),
+    body: Optional[str] = Body(None),
+    regions: Optional[List[str]] = Body(None),
+    status: Optional[str] = Body(None),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Update bulletin fields
+    
+    - **status**: Can be DRAFT, SENT, or NOT_PROCESSED
+    """
+    try:
+        from services.bulletin_service import BulletinService
+        
+        bulletin = BulletinService.update_bulletin(
+            bulletin_id=bulletin_id,
+            title=title,
+            body=body,
+            regions=regions,
+            status=status
+        )
+        
+        return bulletin
+    
+    except Exception as e:
+        logger.error(f"Error updating bulletin: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/bulletins/{bulletin_id}")
+async def delete_bulletin(
+    bulletin_id: int,
+    current_user: dict = Depends(get_current_user)
+):
+    """Delete bulletin (requires ADMINISTRATOR role)"""
+    if current_user.get('role') != 'ADMINISTRATOR':
+        raise HTTPException(status_code=403, detail="Administrator role required")
+    
+    try:
+        from services.bulletin_service import BulletinService
+        
+        success = BulletinService.delete_bulletin(bulletin_id)
+        
+        return {'message': f'Bulletin {bulletin_id} deleted', 'success': success}
+    
+    except Exception as e:
+        logger.error(f"Error deleting bulletin: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/bulletins/{bulletin_id}/close")
+async def close_bulletin(
+    bulletin_id: int,
+    closure_reason: str = Body(..., embed=True),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Manually close a bulletin
+    
+    - Allows analysts to mark a bulletin as closed with a reason
+    - Updates status to CLOSED and records closure metadata
+    - Stops automatic reminders for this bulletin
+    """
+    try:
+        from datetime import datetime
+        import pytz
+        
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # Check if bulletin exists
+        cursor.execute('SELECT id, status, title FROM bulletins WHERE id = ?', (bulletin_id,))
+        bulletin = cursor.fetchone()
+        
+        if not bulletin:
+            raise HTTPException(status_code=404, detail="Bulletin not found")
+        
+        # Update bulletin to CLOSED status
+        now = datetime.now(pytz.UTC).isoformat()
+        cursor.execute('''
+            UPDATE bulletins
+            SET status = 'CLOSED',
+                closed_at = ?,
+                closed_by = ?,
+                closure_reason = ?,
+                can_reopen = 1
+            WHERE id = ?
+        ''', (now, current_user.get('username', 'unknown'), closure_reason, bulletin_id))
+        
+        # Log the closure action
+        cursor.execute('''
+            INSERT INTO bulletin_logs (bulletin_id, action, region, recipients, message, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (
+            bulletin_id,
+            'CLOSED',
+            'ALL',
+            current_user.get('username', 'unknown'),
+            f'Bulletin closed manually. Reason: {closure_reason}',
+            now
+        ))
+        
+        conn.commit()
+        conn.close()
+        
+        logger.info(f"✅ Bulletin #{bulletin_id} closed by {current_user.get('username')}")
+        
+        return {
+            'bulletin_id': bulletin_id,
+            'status': 'CLOSED',
+            'closed_at': now,
+            'closed_by': current_user.get('username'),
+            'closure_reason': closure_reason,
+            'message': 'Bulletin closed successfully'
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error closing bulletin: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/bulletins/{bulletin_id}/reopen")
+async def reopen_bulletin(
+    bulletin_id: int,
+    reopen_reason: Optional[str] = Body(None, embed=True),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Reopen a closed bulletin
+    
+    - Allows reopening of closed bulletins (if can_reopen is True)
+    - Changes status back to SENT
+    - Records reopening in audit trail
+    """
+    try:
+        from datetime import datetime
+        import pytz
+        
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # Check if bulletin exists and can be reopened
+        cursor.execute('''
+            SELECT id, status, closed_at, can_reopen, title
+            FROM bulletins
+            WHERE id = ?
+        ''', (bulletin_id,))
+        bulletin = cursor.fetchone()
+        
+        if not bulletin:
+            raise HTTPException(status_code=404, detail="Bulletin not found")
+        
+        bulletin_id_db, status, closed_at, can_reopen, title = bulletin
+        
+        if status != 'CLOSED':
+            raise HTTPException(status_code=400, detail="Bulletin is not closed")
+        
+        if not can_reopen:
+            raise HTTPException(status_code=403, detail="This bulletin cannot be reopened")
+        
+        # Reopen the bulletin
+        now = datetime.now(pytz.UTC).isoformat()
+        cursor.execute('''
+            UPDATE bulletins
+            SET status = 'SENT',
+                reopened_at = ?,
+                reopened_by = ?
+            WHERE id = ?
+        ''', (now, current_user.get('username', 'unknown'), bulletin_id))
+        
+        # Log the reopen action
+        reason_msg = f' Reason: {reopen_reason}' if reopen_reason else ''
+        cursor.execute('''
+            INSERT INTO bulletin_logs (bulletin_id, action, region, recipients, message, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (
+            bulletin_id,
+            'REOPENED',
+            'ALL',
+            current_user.get('username', 'unknown'),
+            f'Bulletin reopened manually.{reason_msg}',
+            now
+        ))
+        
+        conn.commit()
+        conn.close()
+        
+        logger.info(f"✅ Bulletin #{bulletin_id} reopened by {current_user.get('username')}")
+        
+        return {
+            'bulletin_id': bulletin_id,
+            'status': 'SENT',
+            'reopened_at': now,
+            'reopened_by': current_user.get('username'),
+            'reopen_reason': reopen_reason,
+            'message': 'Bulletin reopened successfully'
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error reopening bulletin: {e}")
+        if "no such column" in str(e).lower():
+            raise HTTPException(
+                status_code=500, 
+                detail="Database schema outdated. Please restart the backend server to apply migrations."
+            )
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/bulletins/{bulletin_id}/reminder-status")
+async def get_bulletin_reminder_status(
+    bulletin_id: int,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Get reminder status for a bulletin
+    
+    Returns information about reminders sent and days since bulletin was sent
+    """
+    try:
+        from datetime import datetime
+        import pytz
+        
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # First check if the new columns exist
+        cursor.execute("PRAGMA table_info(bulletins)")
+        columns = {row[1] for row in cursor.fetchall()}
+        
+        has_new_columns = all([
+            'reminder_7_sent_at' in columns,
+            'reminder_14_sent_at' in columns,
+            'escalation_30_sent_at' in columns,
+            'closed_at' in columns
+        ])
+        
+        if has_new_columns:
+            cursor.execute('''
+                SELECT sent_at, reminder_7_sent_at, reminder_14_sent_at, 
+                       escalation_30_sent_at, closed_at, status
+                FROM bulletins
+                WHERE id = ?
+            ''', (bulletin_id,))
+            
+            result = cursor.fetchone()
+            
+            if not result:
+                conn.close()
+                raise HTTPException(status_code=404, detail="Bulletin not found")
+            
+            sent_at, r7, r14, r30, closed_at, status = result
+        else:
+            # Fallback for old schema
+            cursor.execute('''
+                SELECT sent_at, status
+                FROM bulletins
+                WHERE id = ?
+            ''', (bulletin_id,))
+            
+            result = cursor.fetchone()
+            
+            if not result:
+                conn.close()
+                raise HTTPException(status_code=404, detail="Bulletin not found")
+            
+            sent_at, status = result
+            r7 = r14 = r30 = closed_at = None
+        
+        conn.close()
+        
+        response = {
+            'bulletin_id': bulletin_id,
+            'status': status,
+            'sent_at': sent_at,
+            'reminder_7_sent': bool(r7),
+            'reminder_7_sent_at': r7,
+            'reminder_14_sent': bool(r14),
+            'reminder_14_sent_at': r14,
+            'escalation_30_sent': bool(r30),
+            'escalation_30_sent_at': r30,
+            'is_closed': bool(closed_at),
+            'closed_at': closed_at,
+            'days_since_sent': None
+        }
+        
+        # Calculate days since sent (regardless of closed status)
+        if sent_at:
+            try:
+                sent_date = datetime.fromisoformat(sent_at.replace('Z', '+00:00'))
+                now = datetime.now(pytz.UTC)
+                response['days_since_sent'] = (now - sent_date).days
+            except Exception as e:
+                logger.warning(f"Error calculating days_since_sent for bulletin {bulletin_id}: {e}")
+        
+        return response
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting reminder status: {e}")
+        if "no such column" in str(e).lower():
+            raise HTTPException(
+                status_code=500, 
+                detail="Database schema outdated. Please restart the backend server to apply migrations."
+            )
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+    except Exception as e:
+        logger.error(f"Error deleting bulletin: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/bulletins/{bulletin_id}/attachments")
+async def add_bulletin_attachment(
+    bulletin_id: int,
+    file: UploadFile = File(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """Add attachment to bulletin"""
+    try:
+        import os
+        from services.bulletin_service import BulletinService
+        
+        # Save file to attachments directory
+        attachments_dir = "attachments"
+        os.makedirs(attachments_dir, exist_ok=True)
+        
+        filepath = os.path.join(attachments_dir, f"bulletin_{bulletin_id}_{file.filename}")
+        
+        with open(filepath, "wb") as f:
+            content = await file.read()
+            f.write(content)
+        
+        attachment = BulletinService.add_attachment(
+            bulletin_id=bulletin_id,
+            filename=file.filename,
+            filepath=filepath
+        )
+        
+        return attachment
+    
+    except Exception as e:
+        logger.error(f"Error adding attachment: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/bulletins/{bulletin_id}/send")
+async def send_bulletin(
+    bulletin_id: int,
+    regions_override: Optional[List[str]] = Body(None),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Send bulletin to specified regions with automatic mailing list resolution
+    
+    - Resolves To/Cc/Bcc lists automatically per region
+    - Uses HTML template for email
+    - Logs all sending actions
+    - Updates bulletin status to SENT
+    """
+    try:
+        from services.bulletin_service import BulletinService
+        from app.services.enhanced_delivery_engine import EnhancedBulletinDeliveryEngine
+        from app.services.region_mailing_service import RegionMailingService
+        from services.email_service import EmailService
+        from app.services.audit_logger import AuditLogger
+        
+        # Get bulletin details
+        bulletin = BulletinService.get_bulletin_detail(bulletin_id)
+        if not bulletin:
+            raise HTTPException(status_code=404, detail="Bulletin not found")
+        
+        # Use override regions if provided, else use bulletin regions
+        target_regions = regions_override if regions_override else bulletin['regions']
+        
+        # Initialize delivery services
+        email_service = EmailService()
+        mailing_service = RegionMailingService()
+        audit_logger = AuditLogger()
+        
+        # Send bulletin to each region
+        results = []
+        for region_name in target_regions:
+            try:
+                # Get region details
+                conn = sqlite3.connect('ctba_platform.db')
+                cursor = conn.cursor()
+                cursor.execute('SELECT id FROM regions WHERE name = ?', (region_name,))
+                region_row = cursor.fetchone()
+                conn.close()
+                
+                if not region_row:
+                    logger.warning(f"⚠️ Region '{region_name}' not found, skipping")
+                    continue
+                
+                region_id = region_row[0]
+                
+                # Get mailing lists for region
+                mailing_lists = mailing_service.get_region_mailing_lists(region_id)
+                
+                if not mailing_lists:
+                    logger.warning(f"⚠️ No mailing lists for region '{region_name}', skipping")
+                    continue
+                
+                # Send email
+                to_recipients = mailing_lists.to_recipients
+                cc_recipients = mailing_lists.cc_recipients if mailing_lists.cc_recipients else []
+                bcc_recipients = mailing_lists.bcc_recipients if mailing_lists.bcc_recipients else []
+                
+                email_service.send_email(
+                    to=to_recipients,
+                    cc=cc_recipients,
+                    bcc=bcc_recipients,
+                    subject=bulletin['title'],
+                    html_body=bulletin['body'] or "",
+                    text_body=bulletin['body'] or ""
+                )
+                
+                # Log delivery
+                BulletinService.log_delivery(
+                    bulletin_id=bulletin_id,
+                    action='SENT',
+                    region=region_name,
+                    recipients=', '.join(to_recipients),
+                    message=f"Bulletin sent successfully to {len(to_recipients)} recipients"
+                )
+                
+                results.append({
+                    'region': region_name,
+                    'status': 'success',
+                    'recipients_count': len(to_recipients)
+                })
+                
+                logger.info(f"✅ Bulletin #{bulletin_id} sent to region {region_name}")
+            
+            except Exception as e:
+                logger.error(f"❌ Error sending bulletin to region {region_name}: {e}")
+                results.append({
+                    'region': region_name,
+                    'status': 'error',
+                    'error': str(e)
+                })
+        
+        # Update bulletin status to SENT
+        BulletinService.update_bulletin(
+            bulletin_id=bulletin_id,
+            status='SENT'
+        )
+        
+        return {
+            'bulletin_id': bulletin_id,
+            'results': results,
+            'total_regions': len(target_regions),
+            'successful': len([r for r in results if r['status'] == 'success'])
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error sending bulletin: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/bulletins/{bulletin_id}/delivery-history")
+async def get_bulletin_delivery_history(
+    bulletin_id: int,
+    current_user: dict = Depends(get_current_user)
+):
+    """Get delivery history and logs for a bulletin"""
+    try:
+        from services.bulletin_service import BulletinService
+        
+        history = BulletinService.get_delivery_history(bulletin_id)
+        
+        return {
+            'bulletin_id': bulletin_id,
+            'history': history,
+            'count': len(history)
+        }
+    
+    except Exception as e:
+        logger.error(f"Error fetching delivery history: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/bulletins/{bulletin_id}/close")
+async def close_bulletin(
+    bulletin_id: int,
+    current_user: dict = Depends(get_current_user)
+):
+    """Manually close a bulletin (stops reminders)"""
+    try:
+        from services.bulletin_reminder_service import reminder_service
+        
+        success = reminder_service.manually_close_bulletin(
+            bulletin_id=bulletin_id,
+            closed_by=current_user.get('username', 'unknown')
+        )
+        
+        if success:
+            return {'message': f'Bulletin {bulletin_id} closed', 'success': True}
+        else:
+            raise HTTPException(status_code=500, detail="Failed to close bulletin")
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error closing bulletin: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/bulletins/reminders/statistics")
+async def get_reminder_statistics(current_user: dict = Depends(get_current_user)):
+    """Get statistics about bulletin reminders"""
+    try:
+        from services.bulletin_reminder_service import reminder_service
+        
+        stats = reminder_service.get_reminder_statistics()
+        
+        return stats
+    
+    except Exception as e:
+        logger.error(f"Error getting reminder statistics: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# REGION MANAGEMENT API ENDPOINTS
+# ============================================================================
+
+@app.get("/api/regions")
+async def get_regions(current_user: dict = Depends(get_current_user)):
+    """Get all regions"""
+    try:
+        from services.bulletin_service import RegionService
+        
+        regions = RegionService.get_regions()
+        
+        return {
+            'regions': regions,
+            'count': len(regions)
+        }
+    
+    except Exception as e:
+        logger.error(f"Error fetching regions: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/regions")
+async def create_region(
+    name: str = Body(...),
+    description: Optional[str] = Body(None),
+    recipients: str = Body(...),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Create a new region
+    
+    - **name**: Region name (e.g., "NORAM", "LATAM", "Europe", "APMEA")
+    - **description**: Optional description
+    - **recipients**: Comma-separated email addresses
+    """
+    if current_user.get('role') not in ['ADMINISTRATOR', 'VOC_LEAD']:
+        raise HTTPException(status_code=403, detail="Administrator or VOC_LEAD role required")
+    
+    try:
+        from services.bulletin_service import RegionService
+        
+        region = RegionService.create_region(
+            name=name,
+            description=description,
+            recipients=recipients
+        )
+        
+        return region
+    
+    except Exception as e:
+        logger.error(f"Error creating region: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/regions/{region_id}")
+async def get_region(
+    region_id: int,
+    current_user: dict = Depends(get_current_user)
+):
+    """Get single region details"""
+    try:
+        from services.bulletin_service import RegionService
+        
+        region = RegionService.get_region(region_id)
+        
+        if not region:
+            raise HTTPException(status_code=404, detail="Region not found")
+        
+        return region
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching region: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put("/api/regions/{region_id}")
+async def update_region(
+    region_id: int,
+    description: Optional[str] = Body(None),
+    recipients: Optional[str] = Body(None),
+    current_user: dict = Depends(get_current_user)
+):
+    """Update region (allows archiving by updating description)"""
+    if current_user.get('role') not in ['ADMINISTRATOR', 'VOC_LEAD']:
+        raise HTTPException(status_code=403, detail="Administrator or VOC_LEAD role required")
+    
+    try:
+        from services.bulletin_service import RegionService
+        
+        region = RegionService.update_region(
+            region_id=region_id,
+            description=description,
+            recipients=recipients
+        )
+        
+        return region
+    
+    except Exception as e:
+        logger.error(f"Error updating region: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# ANALYTICS & KPI API ENDPOINTS
+# ============================================================================
+
+@app.get("/api/analytics/analyst-performance")
+async def get_analyst_performance(
+    analyst_username: Optional[str] = Query(None),
+    days: int = Query(default=30, le=365),
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Get analyst performance metrics
+    
+    - CVE throughput (accepted/rejected/pending)
+    - Processing times
+    - Action history
+    - Workload distribution
+    
+    **Parameters:**
+    - **analyst_username**: Optional - filter by specific analyst
+    - **days**: Time period for analysis (default: 30 days)
+    """
+    try:
+        from services.analytics_service import AnalyticsService
+        
+        performance = AnalyticsService.get_analyst_performance(
+            analyst_username=analyst_username,
+            days=days
+        )
+        
+        return performance
+    
+    except Exception as e:
+        logger.error(f"Error getting analyst performance: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/analytics/operational-dashboard")
+async def get_operational_dashboard(current_user: dict = Depends(get_current_user)):
+    """
+    Get operational dashboard metrics
+    
+    - CVE volumes by source (NVD, CVEdetails, CVE.org)
+    - CVE volumes by severity (CRITICAL, HIGH, MEDIUM, LOW)
+    - Processing status distribution
+    - Bulletin statistics
+    - 7-day ingestion trends
+    """
+    try:
+        from services.analytics_service import AnalyticsService
+        
+        dashboard = AnalyticsService.get_operational_dashboard()
+        
+        return dashboard
+    
+    except Exception as e:
+        logger.error(f"Error getting operational dashboard: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/analytics/bulletin-timelines")
+async def get_bulletin_timelines(current_user: dict = Depends(get_current_user)):
+    """
+    Get bulletin timeline metrics
+    
+    - Average time from creation to sending
+    - Bulletin status distribution
+    - Reminders and escalation statistics
+    - Bulletins awaiting action
+    """
+    try:
+        from services.analytics_service import AnalyticsService
+        
+        timelines = AnalyticsService.get_bulletin_timelines()
+        
+        return timelines
+    
+    except Exception as e:
+        logger.error(f"Error getting bulletin timelines: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/analytics/reviewer-workload")
+async def get_reviewer_workload(current_user: dict = Depends(get_current_user)):
+    """
+    Get reviewer workload monitoring
+    
+    - Total pending CVEs
+    - Pending CVEs by severity
+    - Workload distribution by analyst
+    - Average processing times per analyst
+    """
+    try:
+        from services.analytics_service import AnalyticsService
+        
+        workload = AnalyticsService.get_reviewer_workload()
+        
+        return workload
+    
+    except Exception as e:
+        logger.error(f"Error getting reviewer workload: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/analytics/real-time-dashboard")
+async def get_real_time_dashboard(current_user: dict = Depends(get_current_user)):
+    """
+    Get real-time dashboard with live metrics
+    
+    - Current pending CVEs
+    - Today's CVE ingestion count
+    - Active bulletins (DRAFT + SENT)
+    - Recent actions (last 24 hours)
+    - Hourly CVE processing velocity
+    
+    **Use this endpoint for live monitoring dashboards**
+    """
+    try:
+        from services.analytics_service import AnalyticsService
+        
+        dashboard = AnalyticsService.get_real_time_dashboard()
+        
+        return dashboard
+    
+    except Exception as e:
+        logger.error(f"Error getting real-time dashboard: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ========== MAIN ENTRY POINT ==========
@@ -4594,22 +6026,97 @@ if __name__ == "__main__":
     
     # Initialize delivery engine if available
     try:
+        from services.email_service import EmailService
+        from app.services.enhanced_delivery_engine import EnhancedBulletinDeliveryEngine
+        from app.services.region_mailing_service import RegionMailingService
+        from app.services.audit_logger import AuditLogger
+        
         email_service = EmailService()
-        delivery_engine = BulletinDeliveryEngine(email_service=email_service)
+        mailing_service = RegionMailingService()
+        audit_logger = AuditLogger()
+        
+        delivery_engine = EnhancedBulletinDeliveryEngine(
+            email_service=email_service,
+            mailing_service=mailing_service,
+            audit_logger=audit_logger
+        )
+        
         # Start background delivery processor
         delivery_engine.start_background_processor(interval_seconds=60)
-        logger.info("✅ Bulletin delivery engine started")
+        
+        # Set delivery engine reference in bulletin routes
+        from app.api import bulletin_routes
+        bulletin_routes.set_delivery_engine(delivery_engine)
+        
+        # Initialize region mailing lists - ALWAYS ensure they exist
+        try:
+            conn = sqlite3.connect('ctba_platform.db')
+            cursor = conn.cursor()
+            
+            logger.info("📧 Checking and initializing region mailing lists...")
+            cursor.execute('SELECT id, name, recipients FROM regions')
+            regions = cursor.fetchall()
+            
+            for region_id, region_name, recipients_str in regions:
+                # Check if mailing list exists for this region
+                cursor.execute('SELECT id, to_recipients FROM region_mailing_lists WHERE region_id = ?', (region_id,))
+                existing = cursor.fetchone()
+                
+                to_recipients = [e.strip() for e in recipients_str.split(',') if e.strip()]
+                
+                if not existing and to_recipients:
+                    # Create new mailing list
+                    logger.info(f"📧 Creating mailing list for {region_name}: {to_recipients}")
+                    cursor.execute('''
+                        INSERT INTO region_mailing_lists (region_id, to_recipients, cc_recipients, bcc_recipients, active)
+                        VALUES (?, ?, '', '', 1)
+                    ''', (region_id, ','.join(to_recipients)))
+                    conn.commit()
+                    logger.info(f"✅ Mailing list created for {region_name}")
+                elif existing:
+                    existing_recipients = existing[1] if existing[1] else ''
+                    if not existing_recipients.strip() and to_recipients:
+                        # Update empty mailing list with default recipients
+                        logger.info(f"📧 Updating empty mailing list for {region_name}: {to_recipients}")
+                        cursor.execute('''
+                            UPDATE region_mailing_lists 
+                            SET to_recipients = ?, updated_at = CURRENT_TIMESTAMP
+                            WHERE region_id = ?
+                        ''', (','.join(to_recipients), region_id))
+                        conn.commit()
+                        logger.info(f"✅ Mailing list updated for {region_name}")
+                    else:
+                        logger.info(f"✓ Mailing list already configured for {region_name}")
+                else:
+                    logger.warning(f"⚠️ No recipients defined for {region_name}")
+            
+            conn.close()
+            logger.info("✅ Region mailing lists initialization complete")
+        except Exception as e:
+            logger.error(f"❌ Could not initialize region mailing lists: {e}")
+            import traceback
+            traceback.print_exc()
+        
+        logger.info("✅ Enhanced bulletin delivery engine started")
     except Exception as e:
         logger.warning(f"⚠️ Delivery engine not available: {e}")
     
-    # Start import scheduler
-    start_import_scheduler()
+    # Start bulletin reminder service
+    try:
+        from services.bulletin_reminder_service import reminder_service
+        
+        # Check reminders every hour (3600 seconds)
+        reminder_service.start(interval_seconds=3600)
+        
+        logger.info("✅ Bulletin reminder service started (checks every hour)")
+    except Exception as e:
+        logger.warning(f"⚠️ Reminder service not available: {e}")
     
     # Run the application
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
         port=8000,
-        reload=True,
+        reload=False,
         log_level="info"
     )

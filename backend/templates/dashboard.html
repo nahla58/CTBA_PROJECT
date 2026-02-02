@@ -700,7 +700,7 @@
             </nav>
             
             <div class="sidebar-footer">
-                <div>CTBA Platform v7.0.0</div>
+                <div>CTBA Platform</div>
                 <div>© 2026 TDS by Nomios. All rights reserved.</div>
             </div>
         </div>
@@ -1139,16 +1139,18 @@
                                 <thead>
                                     <tr>
                                         <th>CVE ID</th>
-                                        <th>Severity</th>
-                                        <th>Score</th>
-                                        <th>Affected Products</th>
-                                        <th>Status</th>
-                                        <th>Published</th>
-                                        <th>Actions</th>
+                                        <th>SOURCE</th>
+                                        <th>SEVERITY</th>
+                                        <th>SCORE</th>
+                                        <th>AFFECTED PRODUCTS</th>
+                                        <th>STATUS</th>
+                                        <th>PUBLISHED</th>
+                                        <th>UPDATED</th>
+                                        <th>ACTIONS</th>
                                     </tr>
                                 </thead>
                                 <tbody id="cve-table-body">
-                                    <tr><td colspan="7" class="loading"><div class="loading-spinner"></div></td></tr>
+                                    <tr><td colspan="9" class="loading"><div class="loading-spinner"></div></td></tr>
                                 </tbody>
                             </table>
                         </div>
@@ -1305,7 +1307,7 @@
             if (!cves || cves.length === 0) {
                 tbody.innerHTML = `
                     <tr>
-                        <td colspan="7" style="text-align: center; padding: 40px; color: var(--text-secondary);">
+                        <td colspan="9" style="text-align: center; padding: 40px; color: var(--text-secondary);">
                             <i class="fas fa-inbox"></i> No CVEs found
                         </td>
                     </tr>
@@ -1342,6 +1344,8 @@
                 
                 // Format date
                 const publishedDate = cve.published_date_formatted || cve.published_date || 'N/A';
+                const updatedDate = cve.last_modified_date_formatted || cve.last_modified_date || 'N/A';
+                const source = cve.source || 'N/A';
                 
                 html += `
                     <tr>
@@ -1353,6 +1357,9 @@
                             <div style="font-size: 12px; color: var(--text-secondary); margin-top: 4px; max-width: 300px; overflow: hidden; text-overflow: ellipsis;">
                                 ${cve.short_description || ''}
                             </div>
+                        </td>
+                        <td>
+                            <div style="font-weight: 500;">${source}</div>
                         </td>
                         <td>
                             <span class="severity-badge ${severityClass}">
@@ -1376,6 +1383,9 @@
 <div style="font-size: 12px; color: var(--text-secondary);">
     ${calculateDaysAgo(publishedDate)}
 </div>
+                        </td>
+                        <td>
+                           <div>${formatLocalDate(updatedDate)}</div>
                         </td>
                         <td>
                             <div class="action-buttons">

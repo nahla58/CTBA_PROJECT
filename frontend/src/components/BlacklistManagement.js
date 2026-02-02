@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { Link } from 'react-router-dom';
 import './BlacklistManagement.css';
 
 function BlacklistManagement({ user, onLogout }) {
@@ -9,6 +10,11 @@ function BlacklistManagement({ user, onLogout }) {
   const [reason, setReason] = useState('');
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
+  const [showScoreModal, setShowScoreModal] = useState(false);
+  const [selectedProduct, setSelectedProduct] = useState(null);
+  const [scoreAdjustments, setScoreAdjustments] = useState([]);
+  const [adjustmentScore, setAdjustmentScore] = useState('');
+  const [adjustmentReason, setAdjustmentReason] = useState('');
 
   useEffect(() => {
     fetchBlacklist();
@@ -35,7 +41,7 @@ function BlacklistManagement({ user, onLogout }) {
     } catch (error) {
       console.error('Error fetching blacklist:', error);
       setLoading(false);
-      setError('Erreur lors du chargement de la blacklist');
+      setError('Error loading blacklist');
     }
   };
 
@@ -45,7 +51,7 @@ function BlacklistManagement({ user, onLogout }) {
     setSuccess('');
 
     if (!vendor.trim() || !product.trim()) {
-      setError('Veuillez remplir tous les champs obligatoires');
+      setError('Please fill all required fields');
       return;
     }
 
@@ -66,23 +72,23 @@ function BlacklistManagement({ user, onLogout }) {
       });
 
       if (response.ok) {
-        setSuccess(`✅ ${vendor}/${product} ajouté à la blacklist`);
+        setSuccess(`✅ ${vendor}/${product} added to blacklist`);
         setVendor('');
         setProduct('');
         setReason('');
         fetchBlacklist();
       } else {
         const data = await response.json();
-        setError(data.detail || 'Erreur lors de l\'ajout à la blacklist');
+        setError(data.detail || 'Error adding to blacklist');
       }
     } catch (error) {
       console.error('Error adding to blacklist:', error);
-      setError('Erreur de connexion');
+      setError('Connection error');
     }
   };
 
   const handleRemoveFromBlacklist = async (id) => {
-    if (!window.confirm('Êtes-vous sûr de vouloir réintégrer ce produit?')) {
+    if (!window.confirm('Are you sure you want to reinstate this product?')) {
       return;
     }
 
@@ -96,13 +102,88 @@ function BlacklistManagement({ user, onLogout }) {
       });
 
       if (response.ok) {
-        setSuccess('✅ Produit réintégré avec succès');
+        setSuccess('✅ Product reinstated successfully');
         fetchBlacklist();
       } else {
-        setError('Erreur lors de la suppression');
+        setError('Error during deletion');
       }
     } catch (error) {
       console.error('Error removing from blacklist:', error);
+      setError('Erreur de connexion');
+    }
+  };
+
+  const openScoreModal = async (item) => {
+    setSelectedProduct(item);
+    setShowScoreModal(true);
+    setAdjustmentScore('');
+    setAdjustmentReason('');
+    
+    // Fetch existing adjustments for this product
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch(
+        `http://localhost:8000/api/cvss-adjustments?vendor=${encodeURIComponent(item.vendor)}&product=${encodeURIComponent(item.product)}`,
+        {
+          headers: {
+            'Authorization': `Bearer ${token}`
+          }
+        }
+      );
+      
+      if (response.ok) {
+        const data = await response.json();
+        setScoreAdjustments(data.adjustments || []);
+      }
+    } catch (error) {
+      console.error('Error fetching adjustments:', error);
+    }
+  };
+
+  const handleSaveScoreAdjustment = async (e) => {
+    e.preventDefault();
+    
+    if (!selectedProduct || !adjustmentScore) {
+      setError('Please enter an adjustment score');
+      return;
+    }
+
+    const score = parseFloat(adjustmentScore);
+    if (isNaN(score) || score < 0 || score > 10) {
+      setError('Score must be between 0 and 10');
+      return;
+    }
+
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch('http://localhost:8000/api/cvss-adjustments', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'Authorization': `Bearer ${token}`
+        },
+        body: new URLSearchParams({
+          cve_id: 'multiple',
+          vendor: selectedProduct.vendor,
+          product: selectedProduct.product,
+          adjusted_score: score,
+          adjustment_reason: adjustmentReason,
+          analyst: user.username
+        })
+      });
+
+      if (response.ok) {
+        setSuccess('✅ Score adjustment saved');
+        setShowScoreModal(false);
+        setSelectedProduct(null);
+        setAdjustmentScore('');
+        setAdjustmentReason('');
+      } else {
+        const data = await response.json();
+        setError(data.detail || 'Error saving adjustment');
+      }
+    } catch (error) {
+      console.error('Error saving adjustment:', error);
       setError('Erreur de connexion');
     }
   };
@@ -121,21 +202,21 @@ function BlacklistManagement({ user, onLogout }) {
         </div>
 
         <div className="nav-menu">
-          <a href="/" className="nav-item">
+          <Link to="/" className="nav-item">
             📊 Dashboard
-          </a>
-          <a href="/accepted" className="nav-item">
-            ✅ CVEs Acceptés
-          </a>
-          <a href="/rejected" className="nav-item">
-            ❌ CVEs Rejetés
-          </a>
-          <a href="/blacklist" className="nav-item active">
-            🚫 Produits Blacklistés
-          </a>
-          <a href="/history" className="nav-item">
-            📜 Historique des Actions
-          </a>
+          </Link>
+          <Link to="/accepted" className="nav-item">
+            ✅ Accepted CVEs
+          </Link>
+          <Link to="/rejected" className="nav-item">
+            ❌ Rejected CVEs
+          </Link>
+          <Link to="/blacklist" className="nav-item active">
+            🚫 Blacklisted Products
+          </Link>
+          <Link to="/history" className="nav-item">
+            📜 Action History
+          </Link>
         </div>
 
         <div className="sidebar-footer">
@@ -150,7 +231,7 @@ function BlacklistManagement({ user, onLogout }) {
         <div className="top-bar">
           <div className="page-title">
             <h1>🚫 Blacklist Management</h1>
-            <p>Gestion des produits blacklistés et réintégration</p>
+            <p>Management of blacklisted products and reinstatement</p>
           </div>
           <div className="user-section">
             <span className="user-info">👤 {user.username} ({user.role})</span>
@@ -161,7 +242,7 @@ function BlacklistManagement({ user, onLogout }) {
         {/* Add to Blacklist Form */}
         {canEdit && (
           <div className="add-blacklist-form">
-            <h2>➕ Ajouter à la blacklist</h2>
+            <h2>➕ Add to Blacklist</h2>
             
             {error && <div className="alert alert-error">{error}</div>}
             {success && <div className="alert alert-success">{success}</div>}
@@ -194,7 +275,7 @@ function BlacklistManagement({ user, onLogout }) {
                 <textarea
                   value={reason}
                   onChange={(e) => setReason(e.target.value)}
-                  placeholder="Raison de l'ajout à la blacklist..."
+                  placeholder="Reason for adding to blacklist..."
                   rows="3"
                 />
               </div>
@@ -208,12 +289,12 @@ function BlacklistManagement({ user, onLogout }) {
 
         {/* Blacklist Table */}
         <div className="blacklist-section">
-          <h2>📋 Produits Blacklistés ({blacklistedProducts.length})</h2>
+          <h2>📋 Blacklisted Products ({blacklistedProducts.length})</h2>
 
           {loading ? (
-            <div className="loading">⏳ Chargement...</div>
+            <div className="loading">⏳ Loading...</div>
           ) : blacklistedProducts.length === 0 ? (
-            <div className="no-data">Aucun produit blacklisté</div>
+            <div className="no-data">No blacklisted products</div>
           ) : (
             <div className="blacklist-table-container">
               <table className="blacklist-table">
@@ -222,8 +303,8 @@ function BlacklistManagement({ user, onLogout }) {
                     <th>Vendor</th>
                     <th>Product</th>
                     <th>Reason</th>
-                    <th>Ajouté par</th>
-                    <th>Date d'ajout</th>
+                    <th>Added by</th>
+                    <th>Date Added</th>
                     {canEdit && <th>Actions</th>}
                   </tr>
                 </thead>
@@ -235,15 +316,22 @@ function BlacklistManagement({ user, onLogout }) {
                       <td className="reason-cell">{item.reason || '-'}</td>
                       <td className="added-by-cell">{item.added_by}</td>
                       <td className="date-cell">
-                        {new Date(item.created_at).toLocaleDateString('fr-FR')}
+                        {new Date(item.created_at).toLocaleDateString('en-US')}
                       </td>
                       {canEdit && (
                         <td className="actions-cell">
                           <button
+                            className="btn btn-warning btn-small"
+                            onClick={() => openScoreModal(item)}
+                            style={{marginRight: '5px'}}
+                          >
+                            📊 Adjust Score
+                          </button>
+                          <button
                             className="btn btn-danger btn-small"
                             onClick={() => handleRemoveFromBlacklist(item.id)}
                           >
-                            ♻️ Réintégrer
+                            ♻️ Reinstate
                           </button>
                         </td>
                       )}
@@ -254,6 +342,145 @@ function BlacklistManagement({ user, onLogout }) {
             </div>
           )}
         </div>
+
+        {/* Score Adjustment Modal */}
+        {showScoreModal && selectedProduct && (
+          <div style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: 'rgba(0,0,0,0.5)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1000
+          }}>
+            <div style={{
+              backgroundColor: 'white',
+              borderRadius: '8px',
+              maxWidth: '500px',
+              width: '90%',
+              padding: '30px',
+              boxShadow: '0 4px 20px rgba(0,0,0,0.2)'
+            }}>
+              <div style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                marginBottom: '20px',
+                borderBottom: '1px solid #e2e8f0',
+                paddingBottom: '15px'
+              }}>
+                <h2>📊 CVSS Score Adjustment</h2>
+                <button 
+                  onClick={() => setShowScoreModal(false)}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    fontSize: '24px',
+                    cursor: 'pointer'
+                  }}
+                >
+                  ✕
+                </button>
+              </div>
+
+              <div style={{marginBottom: '20px'}}>
+                <p><strong>Product:</strong> {selectedProduct.vendor}/{selectedProduct.product}</p>
+              </div>
+
+              {error && <div className="alert alert-error" style={{marginBottom: '15px'}}>{error}</div>}
+
+              {scoreAdjustments.length > 0 && (
+                <div style={{marginBottom: '20px', padding: '10px', backgroundColor: '#f0f9ff', borderRadius: '4px'}}>
+                  <h4>Previous Adjustments:</h4>
+                  <ul style={{margin: '10px 0', paddingLeft: '20px'}}>
+                    {scoreAdjustments.map((adj, i) => (
+                      <li key={i}>
+                        Adjusted score: <strong>{adj.adjusted_score}/10</strong> (Original: {adj.original_score || 'N/A'})
+                        <br/>
+                        <small>By {adj.analyst} on {new Date(adj.updated_at).toLocaleDateString('en-US')}</small>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              <form onSubmit={handleSaveScoreAdjustment}>
+                <div style={{marginBottom: '15px'}}>
+                  <label style={{display: 'block', marginBottom: '5px', fontWeight: '600'}}>
+                    Adjusted CVSS Score *
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    max="10"
+                    step="0.1"
+                    value={adjustmentScore}
+                    onChange={(e) => setAdjustmentScore(e.target.value)}
+                    placeholder="Between 0 and 10"
+                    style={{
+                      width: '100%',
+                      padding: '8px',
+                      border: '1px solid #cbd5e1',
+                      borderRadius: '4px',
+                      fontSize: '14px'
+                    }}
+                    required
+                  />
+                </div>
+
+                <div style={{marginBottom: '15px'}}>
+                  <label style={{display: 'block', marginBottom: '5px', fontWeight: '600'}}>
+                    Adjustment Reason
+                  </label>
+                  <textarea
+                    value={adjustmentReason}
+                    onChange={(e) => setAdjustmentReason(e.target.value)}
+                    placeholder="Explain why this score is adjusted..."
+                    rows="3"
+                    style={{
+                      width: '100%',
+                      padding: '8px',
+                      border: '1px solid #cbd5e1',
+                      borderRadius: '4px',
+                      fontSize: '14px',
+                      fontFamily: 'inherit'
+                    }}
+                  />
+                </div>
+
+                <div style={{display: 'flex', gap: '10px'}}>
+                  <button
+                    type="submit"
+                    className="btn btn-primary"
+                    style={{flex: 1}}
+                  >
+                    ✅ Save
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowScoreModal(false)}
+                    style={{
+                      flex: 1,
+                      padding: '8px 16px',
+                      backgroundColor: '#e2e8f0',
+                      color: '#1e293b',
+                      border: 'none',
+                      borderRadius: '4px',
+                      cursor: 'pointer',
+                      fontWeight: '500'
+                    }}
+                  >
+                    ✕ Cancel
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

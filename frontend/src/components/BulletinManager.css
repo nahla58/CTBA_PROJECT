@@ -1,0 +1,562 @@
+/* BulletinManager Styles */
+
+.bulletin-manager {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 20px;
+}
+
+.manager-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 30px;
+  gap: 20px;
+}
+
+.manager-header h2 {
+  margin: 0;
+  font-size: 28px;
+  color: #2c3e50;
+}
+
+.filter-tabs {
+  display: flex;
+  gap: 8px;
+}
+
+.tab {
+  padding: 8px 16px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  background: white;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  color: #555;
+  transition: all 0.3s;
+}
+
+.tab:hover {
+  border-color: #3498db;
+  color: #3498db;
+}
+
+.tab.active {
+  background-color: #3498db;
+  color: white;
+  border-color: #3498db;
+}
+
+/* ========== BULLETIN LIST ========== */
+
+.bulletins-list {
+  display: grid;
+  gap: 15px;
+}
+
+.bulletin-card {
+  background: white;
+  border: 1px solid #e0e0e0;
+  border-radius: 6px;
+  padding: 20px;
+  cursor: pointer;
+  transition: all 0.3s;
+}
+
+.bulletin-card:hover {
+  border-color: #3498db;
+  box-shadow: 0 4px 12px rgba(52, 152, 219, 0.15);
+}
+
+.bulletin-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: start;
+  margin-bottom: 12px;
+  gap: 12px;
+}
+
+.bulletin-header h3 {
+  margin: 0;
+  font-size: 18px;
+  color: #2c3e50;
+  flex: 1;
+}
+
+.status-badge {
+  padding: 4px 12px;
+  border-radius: 20px;
+  color: white;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.bulletin-meta {
+  display: flex;
+  gap: 20px;
+  font-size: 13px;
+  color: #666;
+  flex-wrap: wrap;
+}
+
+/* ========== DETAIL VIEW ========== */
+
+.bulletin-detail {
+  max-width: 1000px;
+  margin: 0 auto;
+}
+
+.btn-back {
+  background: none;
+  border: none;
+  color: #3498db;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 600;
+  padding: 0;
+  margin-bottom: 20px;
+  transition: color 0.2s;
+}
+
+.btn-back:hover {
+  color: #2980b9;
+}
+
+.detail-header {
+  background: white;
+  padding: 25px;
+  border-radius: 8px;
+  margin-bottom: 20px;
+  display: flex;
+  justify-content: space-between;
+  align-items: start;
+  gap: 20px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.detail-header h1 {
+  margin: 0 0 10px 0;
+  color: #2c3e50;
+  font-size: 32px;
+}
+
+.meta-info {
+  display: flex;
+  gap: 20px;
+  font-size: 13px;
+  color: #666;
+}
+
+.status-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  align-items: flex-end;
+}
+
+.status-badge-large {
+  padding: 8px 16px;
+  border-radius: 20px;
+  color: white;
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.action-buttons {
+  display: flex;
+  gap: 8px;
+}
+
+.btn {
+  padding: 8px 16px;
+  border: none;
+  border-radius: 4px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.btn-success {
+  background-color: #27ae60;
+  color: white;
+}
+
+.btn-success:hover {
+  background-color: #229954;
+}
+
+.btn-warning {
+  background-color: #f39c12;
+  color: white;
+}
+
+.btn-warning:hover {
+  background-color: #e67e22;
+}
+
+.btn-secondary {
+  background-color: #95a5a6;
+  color: white;
+}
+
+.btn-secondary:hover {
+  background-color: #7f8c8d;
+}
+
+.btn-small {
+  padding: 4px 12px;
+  font-size: 12px;
+}
+
+/* ========== DETAIL SECTIONS ========== */
+
+.detail-section {
+  background: white;
+  padding: 25px;
+  border-radius: 8px;
+  margin-bottom: 20px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.detail-section h3 {
+  margin: 0 0 20px 0;
+  font-size: 18px;
+  color: #2c3e50;
+  padding-bottom: 12px;
+  border-bottom: 2px solid #f0f0f0;
+}
+
+.detail-section h4 {
+  margin: 0;
+  color: #2c3e50;
+}
+
+.detail-section h5 {
+  margin: 0 0 8px 0;
+  color: #555;
+  font-size: 13px;
+}
+
+.detail-section > p {
+  margin: 0;
+  color: #555;
+  line-height: 1.6;
+}
+
+.empty {
+  color: #999;
+  font-style: italic;
+  padding: 20px;
+  text-align: center;
+}
+
+/* ========== CVE GROUPS ========== */
+
+.cve-groups {
+  display: grid;
+  gap: 20px;
+}
+
+.cve-group {
+  border: 1px solid #e0e0e0;
+  border-radius: 6px;
+  padding: 15px;
+  background-color: #f8f9fa;
+}
+
+.group-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.group-header h4 {
+  margin: 0;
+  font-size: 16px;
+  color: #2c3e50;
+}
+
+.cve-count {
+  background-color: #3498db;
+  color: white;
+  padding: 4px 12px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.remediation-box {
+  background: white;
+  padding: 12px;
+  border-left: 4px solid #27ae60;
+  margin-bottom: 12px;
+  border-radius: 2px;
+}
+
+.remediation-box h5 {
+  color: #27ae60;
+}
+
+.remediation-box p {
+  margin: 8px 0 0 0;
+  font-size: 13px;
+  color: #555;
+  line-height: 1.5;
+}
+
+.cve-list {
+  display: grid;
+  gap: 10px;
+}
+
+.cve-item {
+  background: white;
+  padding: 12px;
+  border-radius: 4px;
+  border: 1px solid #e0e0e0;
+}
+
+.cve-basic {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.cve-basic code {
+  background-color: #f0f0f0;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #2c3e50;
+}
+
+.severity-badge {
+  padding: 2px 8px;
+  border-radius: 3px;
+  color: white;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.cvss-score {
+  background-color: #ecf0f1;
+  padding: 2px 8px;
+  border-radius: 3px;
+  font-size: 11px;
+  color: #555;
+}
+
+.cve-description {
+  margin: 0;
+  font-size: 12px;
+  color: #666;
+  line-height: 1.4;
+}
+
+/* ========== REGIONS LIST ========== */
+
+.regions-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 12px;
+}
+
+.region-item {
+  background-color: white;
+  border: 1px solid #e0e0e0;
+  padding: 12px;
+  border-radius: 4px;
+}
+
+.region-item h4 {
+  margin: 0 0 4px 0;
+  font-size: 14px;
+  color: #2c3e50;
+}
+
+.region-item small {
+  color: #999;
+  font-size: 12px;
+}
+
+/* ========== ATTACHMENTS ========== */
+
+.attachments-list {
+  display: grid;
+  gap: 10px;
+}
+
+.attachment-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  background-color: white;
+  border: 1px solid #e0e0e0;
+  border-radius: 4px;
+}
+
+.attachment-name {
+  flex: 1;
+  font-weight: 500;
+  color: #2c3e50;
+  font-size: 14px;
+  word-break: break-word;
+}
+
+.attachment-size {
+  color: #999;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+/* ========== LOADING & EMPTY STATES ========== */
+
+.loading {
+  text-align: center;
+  padding: 40px;
+  color: #999;
+}
+
+.empty-state {
+  text-align: center;
+  padding: 60px 20px;
+}
+
+.empty-state p {
+  color: #999;
+  font-size: 16px;
+}
+
+/* ========== ALERTS ========== */
+
+.alert {
+  padding: 15px 20px;
+  border-radius: 6px;
+  margin-bottom: 20px;
+  font-weight: 500;
+}
+
+.alert-error {
+  background-color: #fee;
+  color: #c33;
+  border-left: 4px solid #c33;
+}
+
+/* ========== RESPONSIVE ========== */
+
+@media (max-width: 768px) {
+  .manager-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .detail-header {
+    flex-direction: column;
+  }
+
+  .status-actions {
+    align-items: flex-start;
+    width: 100%;
+  }
+
+  .action-buttons {
+    width: 100%;
+  }
+
+  .action-buttons .btn {
+    flex: 1;
+  }
+
+  .bulletin-meta {
+    font-size: 12px;
+    gap: 12px;
+  }
+
+  .group-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+
+  .cve-basic {
+    flex-wrap: wrap;
+  }
+
+  .regions-list {
+    grid-template-columns: 1fr;
+  }
+
+  .attachment-item {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .filter-tabs {
+    flex-wrap: wrap;
+  }
+}
+
+/* ========== DARK MODE ========== */
+
+@media (prefers-color-scheme: dark) {
+  .bulletin-manager,
+  .bulletin-detail {
+    color: #e0e0e0;
+  }
+
+  .manager-header h2,
+  .detail-header h1,
+  .bulletin-header h3,
+  .detail-section h3,
+  .detail-section h4,
+  .group-header h4 {
+    color: #fff;
+  }
+
+  .tab,
+  .bulletin-card,
+  .detail-header,
+  .detail-section,
+  .cve-item,
+  .region-item,
+  .attachment-item {
+    background-color: #2a2a2a;
+    border-color: #444;
+  }
+
+  .tab.active {
+    background-color: #3498db;
+  }
+
+  .cve-group {
+    background-color: #1e1e1e;
+  }
+
+  .remediation-box {
+    background-color: #252525;
+    border-color: #444;
+  }
+
+  .cve-basic code {
+    background-color: #1e1e1e;
+    color: #e0e0e0;
+  }
+
+  .cvss-score {
+    background-color: #1e1e1e;
+    color: #aaa;
+  }
+
+  .cve-description,
+  .detail-section > p,
+  .remediation-box p {
+    color: #aaa;
+  }
+}

@@ -140,6 +140,11 @@
   color: #374151;
 }
 
+.status-closed {
+  background: #dbeafe;
+  color: #1e40af;
+}
+
 .actions {
   display: flex;
   gap: 8px;

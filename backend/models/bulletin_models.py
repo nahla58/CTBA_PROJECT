@@ -13,6 +13,7 @@ class BulletinStatus(str, Enum):
     SENT = "SENT"
     NOT_PROCESSED = "NOT_PROCESSED"
     ARCHIVED = "ARCHIVED"
+    CLOSED = "CLOSED"
 
 
 class RegionEnum(str, Enum):

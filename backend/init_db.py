@@ -32,7 +32,9 @@ cursor.execute('''
         decision_comments TEXT,
         imported_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        source TEXT DEFAULT 'NVD'
+        source TEXT DEFAULT 'NVD',
+        source_primary TEXT DEFAULT 'NVD',
+        sources_secondary JSON DEFAULT '[]'
     )
 ''')
 
@@ -43,7 +45,8 @@ cursor.execute('''
         vendor TEXT NOT NULL,
         product TEXT NOT NULL,
         confidence REAL DEFAULT 0.0,
-        FOREIGN KEY (cve_id) REFERENCES cves(cve_id) ON DELETE CASCADE
+        FOREIGN KEY (cve_id) REFERENCES cves(cve_id) ON DELETE CASCADE,
+        UNIQUE(cve_id, vendor, product)
     )
 ''')
 
@@ -171,8 +174,8 @@ for cve in test_cves:
     try:
         cursor.execute(
             '''INSERT INTO cves 
-            (cve_id, description, severity, cvss_score, cvss_version, published_date, status, imported_at, last_updated, source)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+            (cve_id, description, severity, cvss_score, cvss_version, published_date, status, imported_at, last_updated, source, source_primary)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
             (
                 cve['cve_id'],
                 cve['description'],
@@ -183,6 +186,7 @@ for cve in test_cves:
                 cve['status'],
                 datetime.now(pytz.UTC).isoformat(),
                 datetime.now(pytz.UTC).isoformat(),
+                'TEST',
                 'TEST'
             )
         )

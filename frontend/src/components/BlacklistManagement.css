@@ -240,6 +240,17 @@
   box-shadow: 0 4px 12px rgba(239, 68, 68, 0.3);
 }
 
+.btn-warning {
+  background-color: var(--warning-color);
+  color: white;
+}
+
+.btn-warning:hover {
+  background-color: #d97706;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(245, 158, 11, 0.3);
+}
+
 .btn-small {
   padding: 6px 12px;
   font-size: 12px;

@@ -16,79 +16,256 @@ logger = logging.getLogger(__name__)
 
 
 class EmailTemplate:
-    """HTML email template for bulletins"""
+    """HTML email template for bulletins with enhanced formatting and styling"""
     
+    # Enhanced bulletin template with better styling
     BULLETIN_TEMPLATE = """
     <!DOCTYPE html>
     <html>
     <head>
         <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Security Bulletin - {{ title }}</title>
         <style>
-            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-            .container { max-width: 800px; margin: 0 auto; padding: 20px; }
-            .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
-                      color: white; padding: 20px; border-radius: 5px 5px 0 0; }
-            .content { background: #f9f9f9; padding: 20px; }
-            .footer { background: #333; color: #fff; padding: 15px; text-align: center; 
-                      font-size: 12px; border-radius: 0 0 5px 5px; }
-            .cve-group { background: white; padding: 15px; margin: 10px 0; 
-                         border-left: 4px solid #667eea; border-radius: 3px; }
-            .cve-item { margin: 8px 0; padding: 8px; background: #f0f0f0; 
-                        border-radius: 3px; font-family: monospace; }
-            .button { background: #667eea; color: white; padding: 10px 20px; 
-                      text-decoration: none; border-radius: 3px; display: inline-block; }
-            .warning { background: #fff3cd; padding: 10px; border-left: 4px solid #ffc107; 
-                       margin: 10px 0; }
-            table { width: 100%; border-collapse: collapse; margin: 15px 0; }
-            th, td { padding: 10px; text-align: left; border-bottom: 1px solid #ddd; }
-            th { background: #667eea; color: white; }
+            * { margin: 0; padding: 0; box-sizing: border-box; }
+            body { 
+                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+                line-height: 1.6; 
+                color: #333; 
+                background-color: #f5f5f5;
+            }
+            .container { 
+                max-width: 800px; 
+                margin: 0 auto; 
+                background-color: white; 
+                border-radius: 8px; 
+                overflow: hidden; 
+                box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            }
+            .header { 
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
+                color: white; 
+                padding: 40px 20px; 
+                text-align: center;
+            }
+            .header h1 { 
+                font-size: 24px; 
+                margin-bottom: 10px; 
+                font-weight: 600;
+            }
+            .header-meta { 
+                font-size: 14px; 
+                opacity: 0.9;
+            }
+            .content { 
+                background: #ffffff; 
+                padding: 30px; 
+            }
+            .content-title { 
+                font-size: 20px; 
+                color: #333; 
+                margin-bottom: 20px;
+                font-weight: 600;
+            }
+            .content-description {
+                font-size: 14px;
+                line-height: 1.8;
+                color: #555;
+                margin-bottom: 20px;
+                padding: 15px;
+                background-color: #f9f9f9;
+                border-radius: 4px;
+                border-left: 4px solid #667eea;
+            }
+            .section-title { 
+                font-size: 16px; 
+                color: #333; 
+                margin-top: 25px; 
+                margin-bottom: 15px;
+                font-weight: 600;
+                border-bottom: 2px solid #667eea;
+                padding-bottom: 8px;
+            }
+            .cve-group { 
+                background: #f8f9fa; 
+                padding: 15px; 
+                margin: 12px 0; 
+                border-left: 4px solid #667eea; 
+                border-radius: 4px;
+                page-break-inside: avoid;
+            }
+            .cve-group-header {
+                font-size: 14px;
+                font-weight: 600;
+                color: #333;
+                margin-bottom: 10px;
+            }
+            .cve-group-count {
+                font-size: 12px;
+                color: #666;
+                margin-bottom: 10px;
+            }
+            .cve-item { 
+                margin: 10px 0; 
+                padding: 12px; 
+                background: white; 
+                border-radius: 3px; 
+                font-family: 'Courier New', monospace;
+                font-size: 13px;
+                border: 1px solid #e0e0e0;
+            }
+            .cve-id {
+                font-weight: 600;
+                color: #333;
+            }
+            .severity-critical { 
+                background-color: #ffebee; 
+                color: #d32f2f; 
+                font-weight: bold;
+                padding: 2px 6px;
+                border-radius: 3px;
+                font-size: 11px;
+            }
+            .severity-high { 
+                background-color: #fff3e0; 
+                color: #f57c00; 
+                font-weight: bold;
+                padding: 2px 6px;
+                border-radius: 3px;
+                font-size: 11px;
+            }
+            .severity-medium { 
+                background-color: #fffde7; 
+                color: #f9a825; 
+                font-weight: bold;
+                padding: 2px 6px;
+                border-radius: 3px;
+                font-size: 11px;
+            }
+            .severity-low { 
+                background-color: #f1f8e9; 
+                color: #689f38; 
+                font-weight: bold;
+                padding: 2px 6px;
+                border-radius: 3px;
+                font-size: 11px;
+            }
+            .remediation {
+                background: #fff3cd;
+                padding: 12px;
+                border-left: 4px solid #ffc107;
+                border-radius: 3px;
+                margin: 10px 0;
+                font-size: 13px;
+                color: #333;
+            }
+            .remediation strong {
+                display: block;
+                margin-bottom: 8px;
+                color: #333;
+            }
+            table { 
+                width: 100%; 
+                border-collapse: collapse; 
+                margin: 15px 0;
+                font-size: 13px;
+            }
+            th { 
+                background: #667eea; 
+                color: white;
+                padding: 12px;
+                text-align: left;
+                font-weight: 600;
+            }
+            td { 
+                padding: 10px 12px; 
+                border-bottom: 1px solid #ddd;
+            }
+            tr:nth-child(even) {
+                background-color: #f9f9f9;
+            }
+            .footer { 
+                background: #f5f5f5; 
+                color: #666; 
+                padding: 20px; 
+                text-align: center; 
+                font-size: 12px;
+                border-top: 1px solid #ddd;
+            }
+            .footer p {
+                margin: 5px 0;
+            }
+            .alert {
+                background: #f8d7da;
+                border: 1px solid #f5c6cb;
+                color: #721c24;
+                padding: 12px;
+                border-radius: 4px;
+                margin: 10px 0;
+                font-size: 13px;
+            }
+            .divider {
+                border: 0;
+                border-top: 1px solid #ddd;
+                margin: 20px 0;
+            }
+            .region-label {
+                display: inline-block;
+                background-color: #667eea;
+                color: white;
+                padding: 4px 12px;
+                border-radius: 20px;
+                font-size: 12px;
+                margin: 5px 0;
+                font-weight: 500;
+            }
         </style>
     </head>
     <body>
         <div class="container">
             <div class="header">
                 <h1>🔒 Security Bulletin</h1>
-                <p>{{ region }} Region | {{ sent_date }}</p>
+                <div class="header-meta">
+                    <div class="region-label">{{ region }}</div>
+                    <div>{{ sent_date }}</div>
+                </div>
             </div>
             
             <div class="content">
-                <h2>{{ title }}</h2>
+                <div class="content-title">{{ title }}</div>
                 
                 {% if body %}
-                <div class="description">{{ body }}</div>
+                <div class="content-description">{{ body }}</div>
                 {% endif %}
                 
                 {% if grouped_cves %}
-                <h3>Affected Technologies</h3>
+                <div class="section-title">Affected Technologies & CVEs</div>
                 {% for group in grouped_cves %}
                 <div class="cve-group">
-                    <h4>{{ group.technology }}</h4>
-                    <p><strong>Count:</strong> {{ group.count }} CVE(s)</p>
+                    <div class="cve-group-header">{{ group.vendor }}:{{ group.product }}</div>
+                    <div class="cve-group-count">📊 {{ group.cve_count }} CVE(s) | Severity: {% for sev, count in group.severity_levels.items() %}{{ sev }}({{ count }}) {% endfor %}</div>
                     
-                    <h5>Affected CVEs:</h5>
                     {% for cve in group.cves %}
                     <div class="cve-item">
-                        <strong>{{ cve.cve_id }}</strong> - 
-                        <span style="color: {% if cve.severity == 'CRITICAL' %}#d32f2f{% elif cve.severity == 'HIGH' %}#f57c00{% elif cve.severity == 'MEDIUM' %}#fbc02d{% else %}#689f38{% endif %}">
-                            {{ cve.severity }}
-                        </span>
-                        (CVSS: {{ cve.cvss_score }})
+                        <span class="cve-id">{{ cve.cve_id }}</span> 
+                        <span class="severity-{{ cve.severity|lower }}">{{ cve.severity }}</span>
+                        <span style="color: #888;"> | CVSS: {{ cve.cvss_score }}</span>
                         <br>
-                        <small>{{ cve.description[:150] }}...</small>
+                        <small style="color: #666;">{{ cve.description[:120] }}...</small>
                     </div>
                     {% endfor %}
                     
                     {% if group.remediation %}
-                    <div class="warning">
-                        <strong>Remediation Guidance:</strong>
-                        <p>{{ group.remediation }}</p>
+                    <div class="remediation">
+                        <strong>⚙️ Remediation Guidance:</strong>
+                        {{ group.remediation }}
                     </div>
                     {% endif %}
                 </div>
                 {% endfor %}
                 {% endif %}
                 
-                <h3>Summary</h3>
+                <div class="section-title">Summary & Statistics</div>
                 <table>
                     <tr>
                         <th>Metric</th>
@@ -96,18 +273,22 @@ class EmailTemplate:
                     </tr>
                     <tr>
                         <td>Total CVEs</td>
-                        <td>{{ total_cves }}</td>
+                        <td><strong>{{ total_cves }}</strong></td>
                     </tr>
                     <tr>
-                        <td>Critical Issues</td>
-                        <td>{{ critical_count }}</td>
+                        <td>Critical Vulnerabilities</td>
+                        <td><span class="severity-critical">{{ critical_count }}</span></td>
                     </tr>
                     <tr>
-                        <td>High Issues</td>
-                        <td>{{ high_count }}</td>
+                        <td>High Severity</td>
+                        <td><span class="severity-high">{{ high_count }}</span></td>
                     </tr>
                     <tr>
-                        <td>Region</td>
+                        <td>Medium Severity</td>
+                        <td><span class="severity-medium">{{ medium_count }}</span></td>
+                    </tr>
+                    <tr>
+                        <td>Target Region</td>
                         <td>{{ region }}</td>
                     </tr>
                     <tr>
@@ -116,15 +297,20 @@ class EmailTemplate:
                     </tr>
                 </table>
                 
-                <hr>
-                <p style="font-size: 12px; color: #666;">
-                    <strong>For questions or escalations, contact your security team.</strong>
-                </p>
+                <hr class="divider">
+                <div class="alert">
+                    <strong>⚠️ Important:</strong> This is a confidential security bulletin intended for authorized recipients only. 
+                    For questions or escalations, contact your security team immediately.
+                </div>
             </div>
             
             <div class="footer">
-                <p>© 2026 CTBA Security Platform | Confidential</p>
+                <p><strong>CTBA Security Platform</strong></p>
+                <p>© 2026 CTBA Security Operations | Confidential</p>
                 <p>{{ footer_message }}</p>
+                <p style="margin-top: 10px; font-size: 11px; color: #999;">
+                    Bulletin ID: {{ bulletin_id }} | Generated: {{ sent_date }}
+                </p>
             </div>
         </div>
     </body>
@@ -141,9 +327,10 @@ class EmailTemplate:
         total_cves: int = 0,
         critical_count: int = 0,
         high_count: int = 0,
+        medium_count: int = 0,
         footer_message: str = "This is an automated security bulletin"
     ) -> str:
-        """Render bulletin to HTML string"""
+        """Render bulletin to HTML string with enhanced formatting"""
         template = Template(EmailTemplate.BULLETIN_TEMPLATE)
         
         return template.render(
@@ -155,7 +342,8 @@ class EmailTemplate:
             total_cves=total_cves,
             critical_count=critical_count,
             high_count=high_count,
-            sent_date=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            medium_count=medium_count,
+            sent_date=datetime.now().strftime("%Y-%m-%d %H:%M:%S UTC"),
             footer_message=footer_message
         )
 

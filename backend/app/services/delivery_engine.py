@@ -12,6 +12,7 @@ import pytz
 
 from app.services.email_service import EmailService, EmailTemplate
 from app.services.bulletin_service import BulletinService, RegionService
+from app.services.region_mailing_service import RegionMailingService
 
 logger = logging.getLogger(__name__)
 
@@ -338,7 +339,7 @@ class BulletinValidator:
         """
         try:
             bulletin_service = BulletinService()
-            region_service = RegionService()
+            region_mailing_service = RegionMailingService()
             
             bulletin = bulletin_service.get_bulletin_detail(bulletin_id)
             errors = []
@@ -352,14 +353,11 @@ class BulletinValidator:
                 errors.append("At least one region required")
             
             # Check recipients for each region
-            regions = region_service.get_regions()
-            region_map = {r['name']: r for r in regions}
-            
             for region_name in bulletin.get('regions', []):
-                region = region_map.get(region_name)
-                if not region:
-                    errors.append(f"Region {region_name} not found")
-                elif not region.get('recipients') or len(region['recipients']) == 0:
+                mailing = region_mailing_service.get_region_mailing_by_name(region_name)
+                if not mailing:
+                    errors.append(f"No recipients configured for region {region_name}")
+                elif mailing.get_recipient_count() == 0:
                     errors.append(f"No recipients configured for region {region_name}")
             
             return len(errors) == 0, errors

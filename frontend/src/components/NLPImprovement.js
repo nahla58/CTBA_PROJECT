@@ -237,7 +237,7 @@ function NLPImprovement({ user, onLogout }) {
 
                 {results.improvements.length > 0 && (
                   <div className="improvements-list">
-                    <h3>📋 Détails des améliorations</h3>
+                    <h3>📋 Improvement Details</h3>
                     {results.improvements.map((imp, idx) => (
                       <div key={idx} className="improvement-item">
                         <h4>{imp.cve_id}</h4>

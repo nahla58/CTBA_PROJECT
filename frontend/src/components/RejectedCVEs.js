@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { Link } from 'react-router-dom';
 import './RejectedCVEs.css';
 
 function RejectedCVEs({ user, onLogout }) {
@@ -113,27 +114,36 @@ function RejectedCVEs({ user, onLogout }) {
       <div className="sidebar">
         <div className="sidebar-header">
           <div className="logo">
-            <div className="logo-icon">🔐</div>
+            <img src="/logo_nomios.svg" alt="Nomios Logo" style={{height: '40px'}} />
             <div>CTBA</div>
           </div>
         </div>
 
         <div className="nav-menu">
-          <a href="/" className="nav-item">
+          <Link to="/" className="nav-item">
             📊 Dashboard
-          </a>
-          <a href="/accepted" className="nav-item">
-            ✅ CVEs Acceptés
-          </a>
-          <a href="/rejected" className="nav-item active">
-            ❌ CVEs Rejetés
-          </a>
-          <a href="/blacklist" className="nav-item">
-            🚫 Produits Blacklistés
-          </a>
-          <a href="/history" className="nav-item">
-            📜 Historique des Actions
-          </a>
+          </Link>
+          <Link to="/accepted" className="nav-item">
+            ✅ Accepted CVEs
+          </Link>
+          <Link to="/rejected" className="nav-item active">
+            ❌ Rejected CVEs
+          </Link>
+          <Link to="/ingestion" className="nav-item">
+            📡 Source Ingestion
+          </Link>
+          <Link to="/blacklist" className="nav-item">
+            🚫 Blacklisted Products
+          </Link>
+          <Link to="/bulletins" className="nav-item">
+            📧 Bulletins
+          </Link>
+          <Link to="/history" className="nav-item">
+            📜 Action History
+          </Link>
+          <Link to="/kpi" className="nav-item">
+            📈 Reports & KPIs
+          </Link>
         </div>
 
         <div className="sidebar-footer">
@@ -147,8 +157,8 @@ function RejectedCVEs({ user, onLogout }) {
         {/* Top Bar */}
         <div className="top-bar">
           <div className="page-title">
-            <h1>❌ CVEs Rejetés</h1>
-            <p>Liste des CVEs rejetés par les analystes</p>
+            <h1>❌ Rejected CVEs</h1>
+            <p>List of CVEs rejected by analysts</p>
           </div>
           <div className="user-section">
             <span className="user-info">👤 {user.username} ({user.role})</span>
@@ -159,21 +169,21 @@ function RejectedCVEs({ user, onLogout }) {
         {/* CVEs Table */}
         <div className="cves-container">
           {loading ? (
-            <div style={{padding: '40px', textAlign: 'center'}}>⏳ Chargement...</div>
+            <div style={{padding: '40px', textAlign: 'center'}}>⏳ Loading...</div>
           ) : cves.length === 0 ? (
             <div style={{padding: '40px', textAlign: 'center', color: '#666'}}>
-              Aucun CVE rejeté trouvé
+              No rejected CVEs found
             </div>
           ) : (
             <table style={tableStyle}>
               <thead>
                 <tr>
                   <th style={thStyle}>CVE ID</th>
-                  <th style={thStyle}>Sévérité</th>
-                  <th style={thStyle}>Score CVSS</th>
-                  <th style={thStyle}>Produits Affectés</th>
-                  <th style={thStyle}>Date de Décision</th>
-                  <th style={thStyle}>Analyste</th>
+                  <th style={thStyle}>Severity</th>
+                  <th style={thStyle}>CVSS Score</th>
+                  <th style={thStyle}>Affected Products</th>
+                  <th style={thStyle}>Decision Date</th>
+                  <th style={thStyle}>Analyst</th>
                   <th style={thStyle}>Actions</th>
                 </tr>
               </thead>
@@ -188,14 +198,16 @@ function RejectedCVEs({ user, onLogout }) {
                         {cve.severity}
                       </span>
                     </td>
-                    <td style={tdStyle}>{cve.cvss_score || 'N/A'}</td>
+                    <td style={tdStyle}>
+                      {cve.cvss_score !== undefined && cve.cvss_score !== null ? cve.cvss_score : 'N/A'}
+                    </td>
                     <td style={tdStyle}>
                       {cve.affected_products && Array.isArray(cve.affected_products)
                         ? cve.affected_products.map(p => `${p.vendor}/${p.product}`).join(', ')
                         : '-'
                       }
                     </td>
-                    <td style={tdStyle}>{cve.decision_date ? new Date(cve.decision_date).toLocaleDateString('fr-FR') : '-'}</td>
+                    <td style={tdStyle}>{cve.decision_date ? new Date(cve.decision_date).toLocaleDateString('en-US') : '-'}</td>
                     <td style={tdStyle}>{cve.analyst || '-'}</td>
                     <td style={tdStyle}>
                       <button 
@@ -209,7 +221,7 @@ function RejectedCVEs({ user, onLogout }) {
                           cursor: 'pointer'
                         }}
                       >
-                        👁️ Détails
+                        👁️ Details
                       </button>
                     </td>
                   </tr>
@@ -235,7 +247,7 @@ function RejectedCVEs({ user, onLogout }) {
                 </div>
 
                 <div style={{marginBottom: '20px'}}>
-                  <h3>Sévérité et Score</h3>
+                  <h3>Severity and Score</h3>
                   <p>
                     <span className={`severity-badge ${getSeverityBadgeClass(selectedCve.severity)}`}>
                       {selectedCve.severity}
@@ -245,7 +257,7 @@ function RejectedCVEs({ user, onLogout }) {
                 </div>
 
                 <div style={{marginBottom: '20px'}}>
-                  <h3>Produits Affectés</h3>
+                  <h3>Affected Products</h3>
                   {selectedCve.affected_products && Array.isArray(selectedCve.affected_products) ? (
                     <ul>
                       {selectedCve.affected_products.map((p, i) => (
@@ -258,16 +270,16 @@ function RejectedCVEs({ user, onLogout }) {
                 </div>
 
                 <div style={{marginBottom: '20px'}}>
-                  <h3>Informations de Décision</h3>
-                  <p><strong>Analyste:</strong> {selectedCve.analyst || '-'}</p>
-                  <p><strong>Raison du Rejet:</strong> {selectedCve.decision_comments || '-'}</p>
-                  <p><strong>Date:</strong> {selectedCve.decision_date ? new Date(selectedCve.decision_date).toLocaleString('fr-FR') : '-'}</p>
+                  <h3>Decision Information</h3>
+                  <p><strong>Analyst:</strong> {selectedCve.analyst || '-'}</p>
+                  <p><strong>Rejection Reason:</strong> {selectedCve.decision_comments || '-'}</p>
+                  <p><strong>Date:</strong> {selectedCve.decision_date ? new Date(selectedCve.decision_date).toLocaleString('en-US') : '-'}</p>
                 </div>
 
                 <div style={{marginBottom: '20px'}}>
-                  <h3>Référence</h3>
+                  <h3>Reference</h3>
                   <p>
-                    <strong>Publié:</strong> {selectedCve.published_date_formatted || selectedCve.published_date}
+                    <strong>Published:</strong> {selectedCve.published_date_formatted || selectedCve.published_date}
                     <br/>
                     <small style={{color: '#64748b'}}>
                       Timezone: {selectedCve.timezone || 'Europe/Paris (UTC+1)'}

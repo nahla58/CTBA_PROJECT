@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import './Dashboard.css';
 import BulletinManagement from './BulletinManagement';
+import SourceBadges from './SourceBadges';
 
 // Load Font Awesome
 const loadFontAwesome = () => {
@@ -71,6 +73,7 @@ const modalFooterStyle = {
 };
 
 function Dashboard({ user, onLogout }) {
+  const navigate = useNavigate();
   const [cves, setCves] = useState([]);
   const [stats, setStats] = useState({
     total: 0,
@@ -120,13 +123,31 @@ function Dashboard({ user, onLogout }) {
   const handleRefreshCves = async () => {
     setRefreshing(true);
     try {
-      const response = await fetch('http://localhost:8000/api/cves?limit=200&force_refresh=true');
+      console.log('🔄 Import rapide depuis NVD (source principale)...');
+      
+      // ✅ OPTIMISÉ: Import rapide depuis NVD uniquement (~2 secondes)
+      const importResponse = await fetch('http://localhost:8000/api/cves/import-from-all-sources?days=7&limit=200', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        }
+      });
+      
+      if (!importResponse.ok) {
+        throw new Error(`HTTP Error: ${importResponse.status} ${importResponse.statusText}`);
+      }
+      
+      const importData = await importResponse.json();
+      console.log('✅ Import NVD terminé:', importData);
+      
+      // Recharger les CVEs depuis la base de données
+      const response = await fetch('http://localhost:8000/api/cves?limit=200');
       const data = await response.json();
       
-      if (data.cves) {
+      if (data.cves && Array.isArray(data.cves)) {
         setCves(data.cves);
         
-        // Recalculate stats
+        // Recalculer les stats
         const statsData = {
           total: data.cves.length,
           pending: data.cves.filter(c => c.status === 'PENDING').length,
@@ -136,11 +157,19 @@ function Dashboard({ user, onLogout }) {
           low: data.cves.filter(c => c.severity === 'LOW').length
         };
         setStats(statsData);
-        alert('✅ CVE list refreshed successfully!');
+        
+        // Message de succès détaillé
+        alert(`✅ Synchronisation NVD réussie! (rapide)\n\n` +
+              `📥 Importés: ${importData.imported || 0}\n` +
+              `🔄 Mis à jour: ${importData.updated || 0}\n` +
+              `⏭️ Ignorés: ${importData.skipped || 0} (sans score CVSS)\n\n` +
+              `📊 CVEs MEDIUM/HIGH affichés: ${data.cves.length}`);
+      } else {
+        throw new Error('No CVEs data in response');
       }
     } catch (error) {
-      console.error('Error refreshing CVEs:', error);
-      alert('❌ Error refreshing CVE list');
+      console.error('❌ Error refreshing CVEs:', error);
+      alert(`❌ Erreur lors de la synchronisation:\n${error.message}`);
     } finally {
       setRefreshing(false);
     }
@@ -264,38 +293,41 @@ function Dashboard({ user, onLogout }) {
       <div className="sidebar">
         <div className="sidebar-header">
           <div className="logo">
-            <div className="logo-icon">⚠️</div>
-            <div>CTBA Platform</div>
+            <img src="/logo_nomios.svg" alt="Nomios Logo" style={{height: '40px'}} />
+            <div>CTBA</div>
           </div>
         </div>
 
         <div className="nav-menu">
-          <a onClick={() => setActivePage('dashboard')} className={`nav-item ${activePage === 'dashboard' ? 'active' : ''}`} style={{cursor: 'pointer'}}>
+          <a onClick={() => {setActivePage('dashboard');}} className={`nav-item ${activePage === 'dashboard' ? 'active' : ''}`} style={{cursor: 'pointer'}}>
             📊 Dashboard
           </a>
-          <a onClick={() => setActivePage('accepted')} className={`nav-item ${activePage === 'accepted' ? 'active' : ''}`} style={{cursor: 'pointer'}}>
-            ✅ CVEs Acceptés
+          <a onClick={() => navigate('/accepted')} className={`nav-item ${activePage === 'accepted' ? 'active' : ''}`} style={{cursor: 'pointer'}}>
+            ✅ Accepted CVEs
           </a>
-          <a onClick={() => setActivePage('rejected')} className={`nav-item ${activePage === 'rejected' ? 'active' : ''}`} style={{cursor: 'pointer'}}>
-            ❌ CVEs Rejetés
+          <a onClick={() => navigate('/rejected')} className={`nav-item ${activePage === 'rejected' ? 'active' : ''}`} style={{cursor: 'pointer'}}>
+            ❌ Rejected CVEs
           </a>
-          <a onClick={() => setActivePage('ingestion')} className={`nav-item ${activePage === 'ingestion' ? 'active' : ''}`} style={{cursor: 'pointer'}}>
-            📡 Ingestion Sources
+          <a onClick={() => navigate('/ingestion')} className={`nav-item ${activePage === 'ingestion' ? 'active' : ''}`} style={{cursor: 'pointer'}}>
+            📡 Source Ingestion
           </a>
-          <a onClick={() => setActivePage('blacklist')} className={`nav-item ${activePage === 'blacklist' ? 'active' : ''}`} style={{cursor: 'pointer'}}>
-            🚫 Produits Blacklistés
+          <a onClick={() => navigate('/blacklist')} className={`nav-item ${activePage === 'blacklist' ? 'active' : ''}`} style={{cursor: 'pointer'}}>
+            🚫 Blocked Products
           </a>
-          <a onClick={() => setActivePage('bulletins')} className={`nav-item ${activePage === 'bulletins' ? 'active' : ''}`} style={{cursor: 'pointer'}}>
+          <a onClick={() => navigate('/bulletins')} className={`nav-item ${activePage === 'bulletins' ? 'active' : ''}`} style={{cursor: 'pointer'}}>
             📧 Bulletins
           </a>
-          <a onClick={() => setActivePage('history')} className={`nav-item ${activePage === 'history' ? 'active' : ''}`} style={{cursor: 'pointer'}}>
-            📜 Historique des Actions
+          <a onClick={() => navigate('/history')} className={`nav-item ${activePage === 'history' ? 'active' : ''}`} style={{cursor: 'pointer'}}>
+            📜 Action History
+          </a>
+          <a onClick={() => navigate('/kpi')} className={`nav-item ${activePage === 'kpi' ? 'active' : ''}`} style={{cursor: 'pointer'}}>
+            📈 Reports & KPI
           </a>
         </div>
 
         <div className="sidebar-footer">
           <p>CTBA Platform v7.0.0</p>
-          <p>© 2026 Tds by Nomios. All rights reserved.</p>
+          <p>© 2026 TDS by Nomios. All rights reserved.</p>
         </div>
       </div>
 
@@ -309,7 +341,7 @@ function Dashboard({ user, onLogout }) {
           </div>
           <div className="user-section">
             <span className="user-info">👤 {user.username} ({user.role})</span>
-            <button onClick={onLogout} className="btn-logout">🔓 Logout</button>
+            <button onClick={onLogout} className="btn-logout">🔓 Déconnexion</button>
           </div>
         </div>
 
@@ -322,15 +354,16 @@ function Dashboard({ user, onLogout }) {
               <div className="user-actions">
               <div className="search-box">
                 <i className="fas fa-search"></i>
-                <input type="text" placeholder="Search CVEs..." />
+                <input type="text" placeholder="Rechercher les CVE..." />
               </div>
               <button 
                 onClick={handleRefreshCves}
                 disabled={refreshing}
                 className="btn btn-primary"
+                title="Import rapide depuis NVD (2-3 secondes)"
               >
                 <i className={`fas ${refreshing ? 'fa-spinner fa-spin' : 'fa-download'}`}></i>
-                {refreshing ? 'Refreshing...' : 'Get Latest CVEs'}
+                {refreshing ? '⏳ Import en cours...' : '⚡ NVD (rapide)'}
               </button>
             </div>
 
@@ -340,13 +373,13 @@ function Dashboard({ user, onLogout }) {
             <div className="stat-header">
               <div>
                 <div className="stat-value">{stats.total}</div>
-                <div className="stat-label">Total CVEs</div>
+                <div className="stat-label">Total CVE</div>
               </div>
               <div className="stat-icon total">📊</div>
             </div>
             <div className="stat-change positive">
               <i className="fas fa-arrow-up"></i>
-              <span>12% from last week</span>
+              <span>12% par rapport à la semaine dernière</span>
             </div>
           </div>
 
@@ -354,12 +387,12 @@ function Dashboard({ user, onLogout }) {
             <div className="stat-header">
               <div>
                 <div className="stat-value">{stats.pending}</div>
-                <div className="stat-label">Pending Review</div>
+                <div className="stat-label">PENDING</div>
               </div>
               <div className="stat-icon pending">⏳</div>
             </div>
             <div className="stat-change">
-              <span>Awaiting analyst action</span>
+              <span>Attente d'action analyste</span>
             </div>
           </div>
 
@@ -373,7 +406,7 @@ function Dashboard({ user, onLogout }) {
             </div>
             <div className="stat-change negative">
               <i className="fas fa-arrow-up"></i>
-              <span>Require immediate action</span>
+              <span>Nécessite une action immédiate</span>
             </div>
           </div>
 
@@ -381,37 +414,21 @@ function Dashboard({ user, onLogout }) {
             <div className="stat-header">
               <div>
                 <div className="stat-value">{stats.high}</div>
-                <div className="stat-label">High</div>
+                <div className="stat-label">high</div>
               </div>
               <div className="stat-icon high">🟠</div>
             </div>
           </div>
 
-          <div className="stat-card">
-            <div className="stat-header">
-              <div>
-                <div className="stat-value">{stats.medium}</div>
-                <div className="stat-label">Medium</div>
-              </div>
-              <div className="stat-icon medium">🔵</div>
-            </div>
-          </div>
+         
 
-          <div className="stat-card">
-            <div className="stat-header">
-              <div>
-                <div className="stat-value">{stats.low}</div>
-                <div className="stat-label">Low</div>
-              </div>
-              <div className="stat-icon low">🟢</div>
-            </div>
-          </div>
+         
         </div>
 
         {/* CVE Table */}
         <div className="card">
           <div className="card-header">
-            <div className="card-title">Recent CVEs</div>
+            <div className="card-title">CVE Récents</div>
             <div className="card-actions">
               <button className="btn btn-secondary btn-icon">
                 <i className="fas fa-download"></i>
@@ -423,57 +440,39 @@ function Dashboard({ user, onLogout }) {
           </div>
 
           {loading ? (
-            <p>Loading CVEs...</p>
+            <p>Chargement des CVE...</p>
           ) : (
             <div className="table-container">
               <table>
                 <thead>
                   <tr>
-                    <th>CVE ID</th>
+                    <th>ID CVE</th>
                     <th>SOURCE</th>
                     <th>SEVERITY</th>
                     <th>SCORE</th>
                     <th>AFFECTED PRODUCTS</th>
                     <th>STATUS</th>
                     <th>PUBLISHED</th>
+                    <th>UPDATED</th>
                     <th>ACTIONS</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {cves.slice(0, 50).map((cve) => (
+                  {cves.slice(0, 100).map((cve) => (
                     <tr key={cve.cve_id}>
                       <td><a href="#" style={{color: 'var(--primary-color)'}}>{cve.cve_id}</a></td>
                       <td>
-                        {/* Handle multiple sources separated by comma */}
-                        {cve.source ? (
-                          cve.source.split(',').map((src, idx) => (
-                            <span key={idx} style={{
-                              backgroundColor: src === 'nvd' ? '#e0f2fe' : 
-                                             src === 'cvedetails' ? '#f0e7ff' : 
-                                             src === 'msrc' ? '#fef08a' : '#f0fdf4',
-                              color: src === 'nvd' ? '#0c4a6e' : 
-                                     src === 'cvedetails' ? '#5b21b6' : 
-                                     src === 'msrc' ? '#713f12' : '#15803d',
-                              padding: '4px 8px',
-                              borderRadius: '4px',
-                              fontSize: '0.85em',
-                              fontWeight: '600',
-                              textTransform: 'uppercase',
-                              marginRight: idx < cve.source.split(',').length - 1 ? '4px' : '0'
-                            }}>
-                              {src.trim()}
-                            </span>
-                          ))
-                        ) : (
-                          <span style={{color: '#999'}}>unknown</span>
-                        )}
+                        <SourceBadges 
+                          sourcePrimary={cve.source_primary} 
+                          sourcesSecondary={cve.sources_secondary}
+                        />
                       </td>
                       <td>
                         <span className={`severity-badge ${getSeverityBadgeClass(cve.severity)}`}>
                           {cve.severity}
                         </span>
                       </td>
-                      <td>{cve.cvss_score || 'N/A'}</td>
+                      <td>{cve.cvss_score !== null && cve.cvss_score !== undefined ? cve.cvss_score : 'N/A'}</td>
                       <td>
                         {cve.affected_products && Array.isArray(cve.affected_products) 
                           ? cve.affected_products.map(p => `${p.vendor}: ${p.product}`).join(', ')
@@ -488,6 +487,12 @@ function Dashboard({ user, onLogout }) {
                       <td>
                         <span title={`${cve.published_date_utc} | ${cve.timezone || 'UTC+1'}`}>
                           {cve.published_date_formatted || cve.published_date || 'N/A'}
+                          <small style={{fontSize: '0.8em', color: '#64748b'}}> (UTC+1)</small>
+                        </span>
+                      </td>
+                      <td>
+                        <span title={`Dernière mise à jour: ${cve.last_updated}`}>
+                          {cve.last_updated_formatted || cve.last_updated || 'N/A'}
                           <small style={{fontSize: '0.8em', color: '#64748b'}}> (UTC+1)</small>
                         </span>
                       </td>
@@ -508,8 +513,8 @@ function Dashboard({ user, onLogout }) {
             </div>
           )}
         </div>
-            </div>
-        )}
+        </div>
+          )}
         </>
 
         {/* CVE Detail Modal - only show when not on bulletins page */}
@@ -528,7 +533,7 @@ function Dashboard({ user, onLogout }) {
                 </div>
 
                 <div style={modalSectionStyle}>
-                  <h3>Severity & Score</h3>
+                  <h3>Sévérité et Score</h3>
                   <p>
                     <span className={`severity-badge ${getSeverityBadgeClass(selectedCve.severity)}`}>
                       {selectedCve.severity}
@@ -538,7 +543,7 @@ function Dashboard({ user, onLogout }) {
                 </div>
 
                 <div style={modalSectionStyle}>
-                  <h3>Affected Products</h3>
+                  <h3>Produits Affectés</h3>
                   {selectedCve.affected_products && Array.isArray(selectedCve.affected_products) ? (
                     <ul>
                       {selectedCve.affected_products.map((p, i) => (
@@ -546,18 +551,18 @@ function Dashboard({ user, onLogout }) {
                       ))}
                     </ul>
                   ) : (
-                    <p>Unknown</p>
+                    <p>Inconnu</p>
                   )}
                 </div>
 
                 <div style={modalSectionStyle}>
-                  <h3>Published</h3>
+                  <h3>Publié</h3>
                   <p>
                     <strong>{selectedCve.published_date_formatted || selectedCve.published_date}</strong>
                     <br/>
                     <small style={{color: '#64748b'}}>
                       UTC: {selectedCve.published_date_utc}<br/>
-                      Timezone: {selectedCve.timezone || 'Europe/Paris (UTC+1)'}
+                      Fuseau horaire: {selectedCve.timezone || 'Europe/Paris (UTC+1)'}
                     </small>
                   </p>
                 </div>
@@ -570,14 +575,14 @@ function Dashboard({ user, onLogout }) {
                       className="btn btn-primary"
                       onClick={() => handleAcceptCve(selectedCve.cve_id)}
                     >
-                      ✅ Accept
+                      ✅ Accepter
                     </button>
                     <button 
                       className="btn btn-secondary"
                       onClick={() => handleRejectCve(selectedCve.cve_id)}
                       style={{marginLeft: '10px'}}
                     >
-                      ❌ Reject
+                      ❌ Rejeter
                     </button>
                     <button 
                       className="btn btn-secondary"
@@ -589,7 +594,7 @@ function Dashboard({ user, onLogout }) {
                   </>
                 ) : (
                   <p style={{color: '#666', fontStyle: 'italic'}}>
-                    ⚠️ Your role ({user.role}) does not have permission to modify CVE status. Read-only access.
+                    ⚠️ Votre rôle ({user.role}) n'a pas la permission de modifier le statut du CVE. Accès en lecture seule.
                   </p>
                 )}
               </div>

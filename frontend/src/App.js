@@ -9,8 +9,14 @@ import ActionHistory from './components/ActionHistory';
 import BlacklistManagement from './components/BlacklistManagement';
 import AcceptedCVEs from './components/AcceptedCVEs';
 import RejectedCVEs from './components/RejectedCVEs';
+import AnalystKPIDashboard from './components/AnalystKPIDashboard';
 import NLPImprovement from './components/NLPImprovement';
 import MultiSourceIngestion from './components/MultiSourceIngestion';
+import BulletinManagement from './components/BulletinManagement';
+import DeliveryAuditTrail from './components/DeliveryAuditTrail';
+import MailingListManager from './components/MailingListManager';
+import DeliveryQueueMonitor from './components/DeliveryQueueMonitor';
+import BulletinPreview from './components/BulletinPreview';
 import './App.css';
 
 // Composant Statistics
@@ -272,8 +278,13 @@ function AppContent() {
       <Route path="/blacklist" element={<BlacklistManagement user={user} onLogout={handleLogout} />} />
       <Route path="/accepted" element={<AcceptedCVEs user={user} onLogout={handleLogout} />} />
       <Route path="/rejected" element={<RejectedCVEs user={user} onLogout={handleLogout} />} />
+      <Route path="/kpi" element={<AnalystKPIDashboard user={user} onLogout={handleLogout} />} />
       <Route path="/ingestion" element={<MultiSourceIngestion user={user} onLogout={handleLogout} />} />
       <Route path="/nlp-improvement" element={<NLPImprovement user={user} onLogout={handleLogout} />} />
+      <Route path="/bulletins" element={<BulletinManagement user={user} onLogout={handleLogout} />} />
+      <Route path="/delivery-audit" element={<DeliveryAuditTrail user={user} onLogout={handleLogout} />} />
+      <Route path="/mailing-lists" element={<MailingListManager user={user} onLogout={handleLogout} />} />
+      <Route path="/delivery-queue" element={<DeliveryQueueMonitor user={user} onLogout={handleLogout} />} />
     </Routes>
   );
 }

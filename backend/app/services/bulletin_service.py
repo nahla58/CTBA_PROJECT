@@ -30,12 +30,16 @@ class BulletinService:
         body: Optional[str],
         regions: List[str],
         cve_ids: Optional[List[str]],
-        created_by: str
+        created_by: Optional[str] = None
     ) -> Dict[str, Any]:
         """Create a new bulletin"""
         try:
             conn = self._get_connection()
             cursor = conn.cursor()
+            
+            # Use default value if created_by not provided
+            if not created_by:
+                created_by = "system"
             
             regions_json = json.dumps(regions)
             created_at = datetime.now(pytz.UTC).isoformat().replace('+00:00', 'Z')
@@ -50,14 +54,11 @@ class BulletinService:
             # Associate CVEs if provided
             if cve_ids:
                 for cve_id in cve_ids:
-                    try:
-                        cursor.execute('''
-                            INSERT INTO bulletin_cves (bulletin_id, cve_id)
-                            VALUES (?, ?)
-                        ''')
-                    except sqlite3.OperationalError:
-                        # Table doesn't exist yet, skip
-                        pass
+                    cursor.execute('''
+                        INSERT INTO bulletin_cves (bulletin_id, cve_id)
+                        VALUES (?, ?)
+                    ''', (bulletin_id, cve_id))
+                logger.info(f"Associated {len(cve_ids)} CVEs with bulletin {bulletin_id}")
             
             conn.commit()
             conn.close()
@@ -202,6 +203,10 @@ class BulletinService:
             if status is not None:
                 updates.append("status = ?")
                 params.append(status)
+                # Set sent_at timestamp when status changes to SENT
+                if status == 'SENT':
+                    updates.append("sent_at = ?")
+                    params.append(datetime.now().isoformat())
             
             if updates:
                 query = f"UPDATE bulletins SET {', '.join(updates)} WHERE id = ?"
@@ -375,32 +380,60 @@ class BulletinService:
     
     @staticmethod
     def _group_cves_by_technology(cves: List[Dict]) -> List[Dict[str, Any]]:
-        """Group CVEs by vendor/product"""
+        """
+        Group CVEs by vendor/product AND identical remediation guidance.
+        Groups are created hierarchically:
+        1. By vendor:product
+        2. Within each product, by identical remediation guidance
+        """
         groups = {}
         
         for cve in cves:
-            for product in cve.get('products', []):
-                vendor = product['vendor']
-                prod_name = product['product']
-                key = f"{vendor}:{prod_name}"
+            products = cve.get('products', [])
+            if not products:
+                products = [{'vendor': 'Unknown', 'product': 'Unknown'}]
+            
+            for product in products:
+                vendor = product.get('vendor', 'Unknown')
+                prod_name = product.get('product', 'Unknown')
+                remediation = cve.get('remediation', None)
+                
+                # Create composite key: vendor:product:remediation_hash
+                # This groups CVEs with same product AND same remediation together
+                remediation_hash = hash(remediation) if remediation else 'no-remediation'
+                key = f"{vendor}:{prod_name}::{remediation_hash}"
                 
                 if key not in groups:
                     groups[key] = {
                         'vendor': vendor,
                         'product': prod_name,
+                        'remediation': remediation,
                         'cve_count': 0,
                         'cves': [],
-                        'remediation': None
+                        'severity_levels': {}
                     }
                 
                 groups[key]['cve_count'] += 1
+                severity = cve.get('severity', 'UNKNOWN')
+                
+                # Track severity distribution
+                if severity not in groups[key]['severity_levels']:
+                    groups[key]['severity_levels'][severity] = 0
+                groups[key]['severity_levels'][severity] += 1
+                
                 groups[key]['cves'].append({
                     'cve_id': cve.get('cve_id'),
-                    'severity': cve.get('severity', 'UNKNOWN'),
-                    'cvss_score': cve.get('cvss_score', 0)
+                    'severity': severity,
+                    'cvss_score': cve.get('cvss_score', 0),
+                    'published_date': cve.get('published_date'),
+                    'description': cve.get('description')
                 })
         
-        return list(groups.values())
+        # Convert to list and sort by CVE count (largest groups first)
+        result = list(groups.values())
+        result.sort(key=lambda x: x['cve_count'], reverse=True)
+        
+        return result
 
 
 class RegionService:

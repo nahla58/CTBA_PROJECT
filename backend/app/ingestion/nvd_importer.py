@@ -10,6 +10,7 @@ import re
 def sort_cves_by_cvss(cves: list) -> list:
     """
     Sort CVEs by CVSS score in descending order, prioritizing CVSS 4.0 over 3.1.
+    If multiple scores exist, uses the MAXIMUM score.
     """
     def get_cvss_score(item):
         # item can be either the vuln wrapper or the inner cve dict
@@ -21,20 +22,33 @@ def sort_cves_by_cvss(cves: list) -> list:
                 cve = item.get('cve', {})
                 metrics = cve.get('metrics', {})
 
-        cvss_v4 = metrics.get('cvssMetricV4', [{}])
-        cvss_v3 = metrics.get('cvssMetricV31', [{}])
-
-        if cvss_v4 and len(cvss_v4) > 0:
-            return cvss_v4[0].get('cvssData', {}).get('baseScore', 0)
-        elif cvss_v3 and len(cvss_v3) > 0:
-            return cvss_v3[0].get('cvssData', {}).get('baseScore', 0)
-        return 0
+        max_score = 0.0
+        
+        # First priority: CVSS 4.0
+        cvss_v4 = metrics.get('cvssMetricV4', [])
+        if cvss_v4 and isinstance(cvss_v4, list):
+            for metric in cvss_v4:
+                score = metric.get('cvssData', {}).get('baseScore', 0)
+                if isinstance(score, (int, float)) and score > max_score:
+                    max_score = float(score)
+        
+        # Second priority: CVSS 3.1
+        cvss_v3 = metrics.get('cvssMetricV31', [])
+        if cvss_v3 and isinstance(cvss_v3, list):
+            for metric in cvss_v3:
+                score = metric.get('cvssData', {}).get('baseScore', 0)
+                if isinstance(score, (int, float)) and score > max_score:
+                    max_score = float(score)
+        
+        return max_score
 
     return sorted(cves, key=get_cvss_score, reverse=True)
 
 def get_cvss_score(cve):
     """Extract CVSS score from CVE data or vuln wrapper.
-
+    
+    Priority: CVSS 4.0 > CVSS 3.1
+    If multiple scores exist, returns the MAXIMUM score.
     Accepts either the vuln wrapper (with 'cve') or the inner cve dict.
     """
     metrics = {}
@@ -45,14 +59,25 @@ def get_cvss_score(cve):
             inner = cve.get('cve', {})
             metrics = inner.get('metrics', {})
 
-    cvss_v4 = metrics.get('cvssMetricV4', [{}])
-    cvss_v3 = metrics.get('cvssMetricV31', [{}])
-
-    if cvss_v4 and len(cvss_v4) > 0:
-        return cvss_v4[0].get('cvssData', {}).get('baseScore', 0)
-    elif cvss_v3 and len(cvss_v3) > 0:
-        return cvss_v3[0].get('cvssData', {}).get('baseScore', 0)
-    return 0
+    max_score = 0.0
+    
+    # First priority: CVSS 4.0
+    cvss_v4 = metrics.get('cvssMetricV4', [])
+    if cvss_v4 and isinstance(cvss_v4, list):
+        for metric in cvss_v4:
+            score = metric.get('cvssData', {}).get('baseScore', 0)
+            if isinstance(score, (int, float)) and score > max_score:
+                max_score = float(score)
+    
+    # Second priority: CVSS 3.1
+    cvss_v3 = metrics.get('cvssMetricV31', [])
+    if cvss_v3 and isinstance(cvss_v3, list):
+        for metric in cvss_v3:
+            score = metric.get('cvssData', {}).get('baseScore', 0)
+            if isinstance(score, (int, float)) and score > max_score:
+                max_score = float(score)
+    
+    return max_score
 
 
 def parse_cpe_uri(cpe_uri: str) -> tuple:
@@ -117,13 +142,14 @@ def extract_cpe_uris(vuln: dict) -> list:
 def format_date_for_storage(date_str: str) -> str:
     """
     Format a date for storage in database.
-    Returns ISO 8601 format: YYYY-MM-DD HH:MM:SS
+    Returns ISO 8601 format: YYYY-MM-DD HH:MM:SS (UTC time, stored without timezone marker)
+    NOTE: The database stores times in UTC. When reading, always assume UTC.
     """
     if not date_str:
         return datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
     
     try:
-        # NVD format: "2024-01-18T15:30:00.000Z"
+        # NVD format: "2024-01-18T15:30:00.000Z" or CVE.org: "2025-12-27T22:52:30.957Z"
         date_str = date_str.strip()
         if date_str.endswith('Z'):
             date_str = date_str[:-1] + '+00:00'
@@ -137,12 +163,13 @@ def format_date_for_storage(date_str: str) -> str:
         else:
             dt = dt.astimezone(timezone.utc)
         
-        # Format for database storage
-        return dt.strftime('%Y-%m-%d %H:%M:%S')
+        # Format for database storage - keep as UTC with explicit +00:00 marker
+        # This ensures that when we read it back, we know it's UTC
+        return dt.strftime('%Y-%m-%d %H:%M:%S+00:00')
         
     except Exception as e:
         print(f"Error formatting date {date_str}: {e}")
-        return datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')
+        return datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S+00:00')
 
 def import_recent_cves():
     """Importe les CVE récentes depuis NVD dans la base"""
@@ -175,14 +202,49 @@ def import_recent_cves():
         cursor = conn.cursor()
         
         added = 0
+        skipped_but_secondary = 0
         for vuln in sorted_cves:
             cve_data = vuln.get('cve', {})
             cve_id = cve_data.get('id', '')
             
             # Vérifier si existe déjà
             cursor.execute("SELECT * FROM cves WHERE cve_id = ?", (cve_id,))
-            if cursor.fetchone():
-                continue  # Déjà dans la base
+            existing = cursor.fetchone()
+            
+            if existing:
+                # CVE existe déjà - ajouter NVD comme source secondaire si pas déjà
+                try:
+                    cursor.execute(
+                        "SELECT sources_secondary FROM cves WHERE cve_id = ?",
+                        (cve_id,)
+                    )
+                    row = cursor.fetchone()
+                    secondary_sources = []
+                    try:
+                        import json
+                        secondary_sources = json.loads(row['sources_secondary'] or '[]') if row else []
+                    except:
+                        secondary_sources = []
+                    
+                    # Vérifier si NVD est déjà là
+                    if not any(s.get('name') == 'NVD' for s in secondary_sources):
+                        from datetime import datetime, timezone
+                        import pytz
+                        secondary_sources.append({
+                            'name': 'NVD',
+                            'added_at': datetime.now(pytz.UTC).isoformat(),
+                            'data_enrichment': 'affected_products'
+                        })
+                        
+                        import json
+                        cursor.execute(
+                            "UPDATE cves SET sources_secondary = ? WHERE cve_id = ?",
+                            (json.dumps(secondary_sources), cve_id)
+                        )
+                        skipped_but_secondary += 1
+                except Exception as e:
+                    print(f"Warning: Could not add NVD as secondary source to {cve_id}: {e}")
+                continue  # Ne pas créer une nouvelle entrée
             
             # Extraire description
             description = "Pas de description"
@@ -200,10 +262,12 @@ def import_recent_cves():
             # Score CVSS
             cvss_score = get_cvss_score(vuln)
             
-            # Ajouter à la base
+            # Ajouter à la base AVEC source_primary='NVD'
+            import json
             cursor.execute(
-                "INSERT INTO cves (cve_id, description, cvss_score, published_date) VALUES (?, ?, ?, ?)",
-                (cve_id, description, cvss_score, published_date)
+                "INSERT INTO cves (cve_id, description, cvss_score, published_date, source_primary, sources_secondary, imported_at, last_updated) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (cve_id, description, cvss_score, published_date, 'NVD', json.dumps([]), 
+                 datetime.now(pytz.UTC).isoformat(), datetime.now(pytz.UTC).isoformat())
             )
             added += 1
 
@@ -233,6 +297,8 @@ def import_recent_cves():
         conn.commit()
         conn.close()
         print(f"✅ {added} CVE ajoutées à la base")
+        if skipped_but_secondary > 0:
+            print(f"📡 {skipped_but_secondary} CVE existantes enrichies avec NVD comme source secondaire")
         
         # Tester que les dates sont bien formatées
         print("\n=== Vérification des dates ajoutées ===")
