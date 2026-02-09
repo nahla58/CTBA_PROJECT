@@ -1,0 +1,184 @@
+2026-01-26 10:35:13,932 - __main__ - INFO - \u2705 Bulletin management routes registered
+2026-01-26 10:35:13,935 - __main__ - INFO - Initializing database...
+2026-01-26 10:35:13,938 - __main__ - INFO - Users count in DB: 4
+2026-01-26 10:35:13,939 - __main__ - INFO - Users already exist in database (4 users)
+2026-01-26 10:35:13,940 - __main__ - INFO - Database initialized successfully
+2026-01-26 10:35:13,946 - __main__ - INFO - \u2705 CVSS scores verification completed
+2026-01-26 10:35:13,947 - app.services.email_service - INFO - EmailService initialized: localhost:587 (TLS: True)
+2026-01-26 10:35:13,948 - app.services.delivery_engine - INFO - BulletinDeliveryEngine initialized (max_retries=3)
+2026-01-26 10:35:13,949 - app.services.delivery_engine - INFO - Background processor started (interval: 60s)
+2026-01-26 10:35:13,949 - app.services.delivery_engine - INFO - \u2705 Background delivery processor started
+2026-01-26 10:35:13,949 - app.services.delivery_engine - INFO - Queue processing complete: {'processed': 0, 'succeeded': 0, 'failed': 0, 'retried': 0, 'queue_size': 0}
+2026-01-26 10:35:13,949 - __main__ - INFO - \u2705 Bulletin delivery engine started
+2026-01-26 10:35:13,949 - __main__ - INFO - Starting import scheduler (every 30 minutes)...
+2026-01-26 10:35:13,950 - __main__ - INFO - \u23f3 Running CVE.org importer...
+2026-01-26 10:35:13,950 - __main__ - INFO - \U0001f680 Starting CVE.org import from official MITRE API...
+2026-01-26 10:35:13,951 - __main__ - INFO - \U0001f4ca Found 0 CVEs to enhance from CVE.org
+2026-01-26 10:35:13,951 - __main__ - INFO - \u2705 All CVEs already have proper affected products
+2026-01-26 10:35:13,952 - __main__ - INFO - \u23f3 Running CVE Details importer...
+2026-01-26 10:35:13,952 - __main__ - INFO - \U0001f680 Starting CVE Details import from official API...
+2026-01-26 10:35:13,952 - __main__ - INFO - \U0001f4e1 Fetching CVEs from CVE Details search API...
+2026-01-26 10:35:15,114 - __main__ - INFO - \U0001f4ca Found 20 important CVEs from CVE Details
+2026-01-26 10:35:15,116 - __main__ - INFO - \U0001f50d Processing CVE: CVE-2026-24636
+2026-01-26 10:35:15,933 - __main__ - INFO - \u26a0\ufe0f Using CVSS 3.1 for CVE (no 4.x available): score=4.3, severity=MEDIUM
+C:\essai\CTBA_PROJECT\backend\main.py:1893: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  imported_at = datetime.utcnow().isoformat()
+2026-01-26 10:35:15,939 - __main__ - INFO - \u2705 Updated CVE-2026-24636 from CVE Details
+2026-01-26 10:35:15,940 - __main__ - INFO - \U0001f50d Processing CVE: CVE-2026-24635
+2026-01-26 10:35:16,778 - __main__ - INFO - \u26a0\ufe0f Using CVSS 3.1 for CVE (no 4.x available): score=7.5, severity=HIGH
+2026-01-26 10:35:16,783 - __main__ - INFO - \u2705 Updated CVE-2026-24635 from CVE Details
+2026-01-26 10:35:16,784 - __main__ - INFO - \U0001f50d Processing CVE: CVE-2026-24634
+2026-01-26 10:35:17,595 - __main__ - INFO - \u26a0\ufe0f Using CVSS 3.1 for CVE (no 4.x available): score=5.3, severity=MEDIUM
+2026-01-26 10:35:17,597 - __main__ - INFO - \u2705 Updated CVE-2026-24634 from CVE Details
+2026-01-26 10:35:17,598 - __main__ - INFO - \U0001f50d Processing CVE: CVE-2026-24633
+2026-01-26 10:35:18,393 - __main__ - INFO - \u26a0\ufe0f Using CVSS 3.1 for CVE (no 4.x available): score=5.3, severity=MEDIUM
+2026-01-26 10:35:18,397 - __main__ - INFO - \u2705 Updated CVE-2026-24633 from CVE Details
+2026-01-26 10:35:18,397 - __main__ - INFO - \U0001f50d Processing CVE: CVE-2026-24632
+2026-01-26 10:35:19,395 - __main__ - INFO - \u26a0\ufe0f Using CVSS 3.1 for CVE (no 4.x available): score=5.9, severity=MEDIUM
+2026-01-26 10:35:19,396 - __main__ - INFO - \u2705 Updated CVE-2026-24632 from CVE Details
+2026-01-26 10:35:19,396 - __main__ - INFO - \U0001f50d Processing CVE: CVE-2026-24631
+2026-01-26 10:35:20,162 - __main__ - INFO - \u26a0\ufe0f Using CVSS 3.1 for CVE (no 4.x available): score=5.4, severity=MEDIUM
+2026-01-26 10:35:20,164 - __main__ - INFO - \u2705 Updated CVE-2026-24631 from CVE Details
+2026-01-26 10:35:20,165 - __main__ - INFO - \U0001f50d Processing CVE: CVE-2026-24630
+2026-01-26 10:35:20,998 - __main__ - INFO - \u26a0\ufe0f Using CVSS 3.1 for CVE (no 4.x available): score=6.5, severity=MEDIUM
+2026-01-26 10:35:21,002 - __main__ - INFO - \u2705 Updated CVE-2026-24630 from CVE Details
+2026-01-26 10:35:21,003 - __main__ - INFO - \U0001f50d Processing CVE: CVE-2026-24629
+2026-01-26 10:35:21,732 - __main__ - INFO - \u26a0\ufe0f Using CVSS 3.1 for CVE (no 4.x available): score=5.9, severity=MEDIUM
+2026-01-26 10:35:21,734 - __main__ - INFO - \u2705 Updated CVE-2026-24629 from CVE Details
+2026-01-26 10:35:21,735 - __main__ - INFO - \U0001f50d Processing CVE: CVE-2026-24627
+2026-01-26 10:35:22,598 - __main__ - INFO - \u26a0\ufe0f Using CVSS 3.1 for CVE (no 4.x available): score=4.3, severity=MEDIUM
+2026-01-26 10:35:22,604 - __main__ - INFO - \u2705 Updated CVE-2026-24627 from CVE Details
+2026-01-26 10:35:22,605 - __main__ - INFO - \U0001f50d Processing CVE: CVE-2026-24626
+2026-01-26 10:35:23,462 - __main__ - INFO - \u26a0\ufe0f Using CVSS 3.1 for CVE (no 4.x available): score=5.9, severity=MEDIUM
+2026-01-26 10:35:23,464 - __main__ - INFO - \u2705 Updated CVE-2026-24626 from CVE Details
+2026-01-26 10:35:23,465 - __main__ - INFO - \U0001f50d Processing CVE: CVE-2026-24625
+2026-01-26 10:35:24,278 - __main__ - INFO - \u26a0\ufe0f Using CVSS 3.1 for CVE (no 4.x available): score=5.3, severity=MEDIUM
+2026-01-26 10:35:24,281 - __main__ - INFO - \u2705 Updated CVE-2026-24625 from CVE Details
+2026-01-26 10:35:24,282 - __main__ - INFO - \U0001f50d Processing CVE: CVE-2026-24624
+2026-01-26 10:35:25,077 - __main__ - INFO - \u26a0\ufe0f Using CVSS 3.1 for CVE (no 4.x available): score=7.2, severity=HIGH
+2026-01-26 10:35:25,080 - __main__ - INFO - \u2705 Updated CVE-2026-24624 from CVE Details
+2026-01-26 10:35:25,081 - __main__ - INFO - \U0001f50d Processing CVE: CVE-2026-24623
+2026-01-26 10:35:25,881 - __main__ - WARNING - \u274c No CVSS metrics found for CVE, using default score 5.0
+2026-01-26 10:35:25,884 - __main__ - INFO - \u2705 Updated CVE-2026-24623 from CVE Details
+2026-01-26 10:35:25,884 - __main__ - INFO - \U0001f50d Processing CVE: CVE-2026-24622
+2026-01-26 10:35:26,663 - __main__ - INFO - \u26a0\ufe0f Using CVSS 3.1 for CVE (no 4.x available): score=5.4, severity=MEDIUM
+2026-01-26 10:35:26,667 - __main__ - INFO - \u2705 Updated CVE-2026-24622 from CVE Details
+2026-01-26 10:35:26,667 - __main__ - INFO - \U0001f50d Processing CVE: CVE-2026-24621
+2026-01-26 10:35:27,370 - __main__ - INFO - \u26a0\ufe0f Using CVSS 3.1 for CVE (no 4.x available): score=4.8, severity=MEDIUM
+2026-01-26 10:35:27,374 - __main__ - INFO - \u2705 Updated CVE-2026-24621 from CVE Details
+2026-01-26 10:35:27,374 - __main__ - INFO - \U0001f50d Processing CVE: CVE-2026-24620
+2026-01-26 10:35:28,182 - __main__ - WARNING - \u274c No CVSS metrics found for CVE, using default score 5.0
+2026-01-26 10:35:28,185 - __main__ - INFO - \u2705 Updated CVE-2026-24620 from CVE Details
+2026-01-26 10:35:28,186 - __main__ - INFO - \U0001f50d Processing CVE: CVE-2026-24619
+2026-01-26 10:35:29,041 - __main__ - INFO - \u26a0\ufe0f Using CVSS 3.1 for CVE (no 4.x available): score=5.3, severity=MEDIUM
+2026-01-26 10:35:29,044 - __main__ - INFO - \u2705 Updated CVE-2026-24619 from CVE Details
+2026-01-26 10:35:29,044 - __main__ - INFO - \U0001f50d Processing CVE: CVE-2026-24617
+2026-01-26 10:35:29,834 - __main__ - INFO - \u26a0\ufe0f Using CVSS 3.1 for CVE (no 4.x available): score=6.5, severity=MEDIUM
+2026-01-26 10:35:29,837 - __main__ - INFO - \u2705 Updated CVE-2026-24617 from CVE Details
+2026-01-26 10:35:29,838 - __main__ - INFO - \U0001f50d Processing CVE: CVE-2026-24616
+2026-01-26 10:35:30,582 - __main__ - INFO - \u26a0\ufe0f Using CVSS 3.1 for CVE (no 4.x available): score=6.5, severity=MEDIUM
+2026-01-26 10:35:30,586 - __main__ - INFO - \u2705 Updated CVE-2026-24616 from CVE Details
+2026-01-26 10:35:30,587 - __main__ - INFO - \U0001f50d Processing CVE: CVE-2026-24615
+2026-01-26 10:35:31,394 - __main__ - INFO - \u26a0\ufe0f Using CVSS 3.1 for CVE (no 4.x available): score=5.3, severity=MEDIUM
+2026-01-26 10:35:31,396 - __main__ - INFO - \u2705 Updated CVE-2026-24615 from CVE Details
+2026-01-26 10:35:31,405 - __main__ - INFO - \u2705 CVE Details import completed in 17.45s
+2026-01-26 10:35:31,406 - __main__ - INFO - \U0001f4ca Imported 20 CVEs from CVE Details
+2026-01-26 10:35:31,408 - __main__ - INFO - \u23f3 Running NVD importer...
+2026-01-26 10:35:31,409 - __main__ - INFO - \U0001f680 Starting NVD import with intelligent product extraction...
+2026-01-26 10:35:31,409 - __main__ - INFO - \U0001f4c5 Import period: 2026-01-25 10:35:31.409673 to 2026-01-26 10:35:31.409684
+2026-01-26 10:35:31,411 - __main__ - INFO - \U0001f4e1 Fetching CVEs from NVD...
+2026-01-26 10:35:32,394 - __main__ - INFO - \U0001f4ca Found 50 vulnerabilities
+2026-01-26 10:35:32,400 - __main__ - INFO - \u2705 NVD import completed in 0.99s
+2026-01-26 10:35:32,400 - __main__ - INFO - \U0001f4ca Imported 0 CVEs (skipped due blacklist: 0)
+2026-01-26 10:35:32,402 - __main__ - INFO - \u23f3 Running MSRC importer...
+2026-01-26 10:35:32,403 - __main__ - INFO - \U0001f680 Starting MSRC import from Microsoft CVRF API...
+C:\essai\CTBA_PROJECT\backend\main.py:2117: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  now = datetime.utcnow()
+2026-01-26 10:35:32,404 - __main__ - INFO - \U0001f4e1 Fetching MSRC bulletins from https://api.msrc.microsoft.com/cvrf/v2.0/updates/2026-01...
+2026-01-26 10:35:33,302 - __main__ - INFO - \u26a0\ufe0f No bulletins for this month, trying previous month...
+2026-01-26 10:35:34,083 - __main__ - WARNING - \u26a0\ufe0f MSRC API error: 404 Client Error: Resource Not Found for url: https://api.msrc.microsoft.com/cvrf/v2.0/updates/2025-12
+2026-01-26 10:35:34,086 - __main__ - INFO - \u23f3 Running Hackuity importer...
+2026-01-26 10:35:34,087 - __main__ - INFO - \U0001f527 Hackuity importer called (no data source configured)
+2026-01-26 10:35:34,087 - __main__ - INFO - \u23f3 Processing manual CVE entries...
+2026-01-26 10:35:34,087 - __main__ - INFO - \U0001f4dd Processing manually entered CVEs...
+2026-01-26 10:35:34,089 - __main__ - INFO - \u26a0\ufe0f  No manual CVEs table found
+2026-01-26 10:35:34,090 - __main__ - INFO - \U0001f4ca Import cycle complete: {'cveorg': 'success', 'cvedetails': 'success', 'nvd': 'success', 'msrc': 'success', 'hackuity': 'success', 'manual': 'success'}
+INFO:     Will watch for changes in these directories: ['C:\\essai\\CTBA_PROJECT\\backend']
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     Started reloader process [7260] using WatchFiles
+2026-01-26 10:35:34,984 - __mp_main__ - INFO - \u2705 Bulletin management routes registered
+2026-01-26 10:35:35,038 - main - INFO - \u2705 Bulletin management routes registered
+INFO:     Started server process [15276]
+INFO:     Waiting for application startup.
+2026-01-26 10:35:35,039 - main - INFO - Starting CTBA Platform API...
+2026-01-26 10:35:35,302 - nlp_extractor - INFO - \u2705 NLP extractor initialized successfully
+2026-01-26 10:35:35,303 - main - INFO - Initializing database...
+2026-01-26 10:35:35,304 - main - INFO - Users count in DB: 4
+2026-01-26 10:35:35,305 - main - INFO - Users already exist in database (4 users)
+2026-01-26 10:35:35,306 - main - INFO - Database initialized successfully
+2026-01-26 10:35:35,311 - main - INFO - \U0001f680 Starting NVD import with intelligent product extraction...
+2026-01-26 10:35:35,311 - main - INFO - CTBA Platform API started successfully
+INFO:     Application startup complete.
+2026-01-26 10:35:35,311 - main - INFO - \U0001f4c5 Import period: 2026-01-25 10:35:35.311964 to 2026-01-26 10:35:35.311971
+2026-01-26 10:35:35,313 - main - INFO - \U0001f4e1 Fetching CVEs from NVD...
+2026-01-26 10:35:35,364 - watchfiles.main - INFO - 4 changes detected
+2026-01-26 10:35:36,148 - main - INFO - \U0001f4ca Found 50 vulnerabilities
+2026-01-26 10:35:36,153 - main - INFO - \u2705 NVD import completed in 0.84s
+2026-01-26 10:35:36,153 - main - INFO - \U0001f4ca Imported 0 CVEs (skipped due blacklist: 0)
+2026-01-26 10:35:36,227 - watchfiles.main - INFO - 4 changes detected
+2026-01-26 10:35:41,081 - watchfiles.main - INFO - 1 change detected
+2026-01-26 10:35:52,802 - watchfiles.main - INFO - 4 changes detected
+2026-01-26 10:36:12,405 - watchfiles.main - INFO - 4 changes detected
+2026-01-26 10:36:13,950 - app.services.delivery_engine - INFO - Queue processing complete: {'processed': 0, 'succeeded': 0, 'failed': 0, 'retried': 0, 'queue_size': 0}
+2026-01-26 10:37:13,953 - app.services.delivery_engine - INFO - Queue processing complete: {'processed': 0, 'succeeded': 0, 'failed': 0, 'retried': 0, 'queue_size': 0}
+2026-01-26 10:38:13,956 - app.services.delivery_engine - INFO - Queue processing complete: {'processed': 0, 'succeeded': 0, 'failed': 0, 'retried': 0, 'queue_size': 0}
+2026-01-26 10:39:13,959 - app.services.delivery_engine - INFO - Queue processing complete: {'processed': 0, 'succeeded': 0, 'failed': 0, 'retried': 0, 'queue_size': 0}
+2026-01-26 10:40:13,963 - app.services.delivery_engine - INFO - Queue processing complete: {'processed': 0, 'succeeded': 0, 'failed': 0, 'retried': 0, 'queue_size': 0}
+2026-01-26 10:41:13,967 - app.services.delivery_engine - INFO - Queue processing complete: {'processed': 0, 'succeeded': 0, 'failed': 0, 'retried': 0, 'queue_size': 0}
+2026-01-26 10:42:13,970 - app.services.delivery_engine - INFO - Queue processing complete: {'processed': 0, 'succeeded': 0, 'failed': 0, 'retried': 0, 'queue_size': 0}
+2026-01-26 10:43:13,974 - app.services.delivery_engine - INFO - Queue processing complete: {'processed': 0, 'succeeded': 0, 'failed': 0, 'retried': 0, 'queue_size': 0}
+2026-01-26 10:44:13,978 - app.services.delivery_engine - INFO - Queue processing complete: {'processed': 0, 'succeeded': 0, 'failed': 0, 'retried': 0, 'queue_size': 0}
+2026-01-26 10:45:13,981 - app.services.delivery_engine - INFO - Queue processing complete: {'processed': 0, 'succeeded': 0, 'failed': 0, 'retried': 0, 'queue_size': 0}
+2026-01-26 10:46:13,984 - app.services.delivery_engine - INFO - Queue processing complete: {'processed': 0, 'succeeded': 0, 'failed': 0, 'retried': 0, 'queue_size': 0}
+2026-01-26 10:47:13,987 - app.services.delivery_engine - INFO - Queue processing complete: {'processed': 0, 'succeeded': 0, 'failed': 0, 'retried': 0, 'queue_size': 0}
+2026-01-26 10:48:13,991 - app.services.delivery_engine - INFO - Queue processing complete: {'processed': 0, 'succeeded': 0, 'failed': 0, 'retried': 0, 'queue_size': 0}
+2026-01-26 10:48:59,884 - watchfiles.main - INFO - 4 changes detected
+2026-01-26 10:49:13,993 - app.services.delivery_engine - INFO - Queue processing complete: {'processed': 0, 'succeeded': 0, 'failed': 0, 'retried': 0, 'queue_size': 0}
+2026-01-26 10:50:13,998 - app.services.delivery_engine - INFO - Queue processing complete: {'processed': 0, 'succeeded': 0, 'failed': 0, 'retried': 0, 'queue_size': 0}
+2026-01-26 10:50:46,092 - watchfiles.main - INFO - 4 changes detected
+2026-01-26 10:50:50,169 - watchfiles.main - INFO - 4 changes detected
+2026-01-26 10:51:14,002 - app.services.delivery_engine - INFO - Queue processing complete: {'processed': 0, 'succeeded': 0, 'failed': 0, 'retried': 0, 'queue_size': 0}
+2026-01-26 10:51:14,159 - watchfiles.main - INFO - 4 changes detected
+2026-01-26 10:51:27,725 - main - INFO - Login attempt for user: analyst1
+2026-01-26 10:51:27,729 - main - INFO - User found: analyst1, Role: VOC_L1
+2026-01-26 10:51:27,794 - watchfiles.main - INFO - 4 changes detected
+2026-01-26 10:51:27,824 - main - INFO - Password verification result: True
+2026-01-26 10:51:27,825 - main - INFO - Login successful for user: analyst1
+2026-01-26 10:51:28,174 - watchfiles.main - INFO - 4 changes detected
+2026-01-26 10:51:30,217 - watchfiles.main - INFO - 4 changes detected
+2026-01-26 10:51:53,973 - watchfiles.main - INFO - 4 changes detected
+2026-01-26 10:51:59,804 - watchfiles.main - INFO - 5 changes detected
+2026-01-26 10:52:03,459 - watchfiles.main - INFO - 4 changes detected
+2026-01-26 10:52:05,829 - watchfiles.main - INFO - 4 changes detected
+2026-01-26 10:52:14,005 - app.services.delivery_engine - INFO - Queue processing complete: {'processed': 0, 'succeeded': 0, 'failed': 0, 'retried': 0, 'queue_size': 0}
+2026-01-26 10:53:14,007 - app.services.delivery_engine - INFO - Queue processing complete: {'processed': 0, 'succeeded': 0, 'failed': 0, 'retried': 0, 'queue_size': 0}
+2026-01-26 10:54:14,010 - app.services.delivery_engine - INFO - Queue processing complete: {'processed': 0, 'succeeded': 0, 'failed': 0, 'retried': 0, 'queue_size': 0}
+2026-01-26 10:54:43,430 - watchfiles.main - INFO - 4 changes detected
+2026-01-26 10:55:01,608 - watchfiles.main - INFO - 4 changes detected
+2026-01-26 10:55:04,328 - watchfiles.main - INFO - 4 changes detected
+2026-01-26 10:55:14,013 - app.services.delivery_engine - INFO - Queue processing complete: {'processed': 0, 'succeeded': 0, 'failed': 0, 'retried': 0, 'queue_size': 0}
+2026-01-26 10:55:32,054 - watchfiles.main - INFO - 4 changes detected
+2026-01-26 10:55:33,274 - watchfiles.main - INFO - 2 changes detected
+2026-01-26 10:55:49,006 - watchfiles.main - INFO - 4 changes detected
+2026-01-26 10:55:49,767 - watchfiles.main - INFO - 4 changes detected
+2026-01-26 10:55:52,057 - watchfiles.main - INFO - 4 changes detected
+2026-01-26 10:55:53,276 - watchfiles.main - INFO - 4 changes detected
+2026-01-26 10:55:54,099 - watchfiles.main - INFO - 4 changes detected
+2026-01-26 10:56:04,331 - watchfiles.main - INFO - 4 changes detected
+2026-01-26 10:56:14,016 - app.services.delivery_engine - INFO - Queue processing complete: {'processed': 0, 'succeeded': 0, 'failed': 0, 'retried': 0, 'queue_size': 0}
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+2026-01-26 10:56:15,056 - main - INFO - Shutting down CTBA Platform API...
+INFO:     Application shutdown complete.
+INFO:     Finished server process [15276]
+INFO:     Stopping reloader process [7260]

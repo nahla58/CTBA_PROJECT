@@ -1,0 +1,17 @@
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+requests==2.31.0
+# JWT helper
+PyJWT==2.8.0
+# Database drivers
+psycopg2-binary==2.9.9  # PostgreSQL (production)
+# sqlite3 est déjà dans Python, pas besoin de l'installer
+# Environment variables
+python-dotenv==1.0.0
+# NLP
+spacy==3.7.2
+# Scheduling
+schedule==1.2.0
+# Templating
+Jinja2==3.1.2
+# Logging

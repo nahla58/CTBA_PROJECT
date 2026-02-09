@@ -1,0 +1,580 @@
+/* CVElist.css - Styles for CTBA Platform */
+
+/* Global container */
+.ctba-container {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 20px;
+  background-color: #f8fafc;
+  min-height: 100vh;
+}
+
+/* Dashboard stats */
+.dashboard-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.stat-card {
+  background: white;
+  border-radius: 8px;
+  padding: 20px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  border-left: 4px solid;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.stat-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+.stat-card.critical {
+  border-left-color: #dc2626;
+}
+
+.stat-card.high {
+  border-left-color: #ea580c;
+}
+
+.stat-card.medium {
+  border-left-color: #d97706;
+}
+
+.stat-card.low {
+  border-left-color: #059669;
+}
+
+.stat-card.pending {
+  border-left-color: #f59e0b;
+}
+
+.stat-value {
+  font-size: 2rem;
+  font-weight: bold;
+  margin: 8px 0;
+}
+
+.stat-label {
+  color: #64748b;
+  font-size: 0.875rem;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Filters section */
+.filters-container {
+  background: white;
+  border-radius: 8px;
+  padding: 20px;
+  margin-bottom: 24px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.filter-row {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.filter-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 180px;
+}
+
+.filter-label {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #374151;
+}
+
+/* CVE Table */
+.cve-table-container {
+  background: white;
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.cve-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.cve-table thead {
+  background-color: #f8fafc;
+  border-bottom: 2px solid #e5e7eb;
+}
+
+.cve-table th {
+  padding: 16px;
+  text-align: left;
+  font-weight: 600;
+  color: #374151;
+  font-size: 0.875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.cve-table td {
+  padding: 16px;
+  border-bottom: 1px solid #e5e7eb;
+  vertical-align: top;
+}
+
+.cve-table tbody tr {
+  transition: background-color 0.2s ease;
+}
+
+.cve-table tbody tr:hover {
+  background-color: #f8fafc;
+}
+
+.cve-table tbody tr.critical-row {
+  border-left: 4px solid #dc2626;
+}
+
+.cve-table tbody tr.high-row {
+  border-left: 4px solid #ea580c;
+}
+
+/* CVE ID cell */
+.cve-id-cell {
+  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+}
+
+.cve-id {
+  font-weight: bold;
+  color: #1e40af;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.cve-id:hover {
+  text-decoration: underline;
+}
+
+.cve-description {
+  font-size: 0.875rem;
+  color: #6b7280;
+  margin-top: 4px;
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Severity badges */
+.severity-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 9999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: white;
+}
+
+.severity-badge.critical {
+  background-color: #dc2626;
+}
+
+.severity-badge.high {
+  background-color: #ea580c;
+}
+
+.severity-badge.medium {
+  background-color: #d97706;
+}
+
+.severity-badge.low {
+  background-color: #059669;
+}
+
+.cvss-score {
+  font-size: 1.25rem;
+  font-weight: bold;
+  text-align: center;
+}
+
+.cvss-score.critical {
+  color: #dc2626;
+}
+
+.cvss-score.high {
+  color: #ea580c;
+}
+
+.cvss-score.medium {
+  color: #d97706;
+}
+
+.cvss-score.low {
+  color: #059669;
+}
+
+/* Affected products */
+.products-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.product-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  background-color: #e5e7eb;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  color: #374151;
+}
+
+.product-chip.out-of-scope {
+  background-color: #fecaca;
+  color: #991b1b;
+}
+
+.product-chip.priority {
+  background-color: #fed7aa;
+  color: #9a3412;
+}
+
+.product-chip.normal {
+  background-color: #bbf7d0;
+  color: #166534;
+}
+
+/* Status badges */
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.status-badge.pending {
+  background-color: #fef3c7;
+  color: #92400e;
+}
+
+.status-badge.accepted {
+  background-color: #d1fae5;
+  color: #065f46;
+}
+
+.status-badge.rejected {
+  background-color: #fee2e2;
+  color: #991b1b;
+}
+
+.status-badge.deferred {
+  background-color: #e0e7ff;
+  color: #3730a3;
+}
+
+/* Action buttons */
+.action-buttons {
+  display: flex;
+  gap: 8px;
+}
+
+.action-btn {
+  padding: 6px 12px;
+  border: none;
+  border-radius: 4px;
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: all 0.2s ease;
+}
+
+.action-btn:hover {
+  transform: translateY(-1px);
+}
+
+.action-btn.accept {
+  background-color: #10b981;
+  color: white;
+}
+
+.action-btn.accept:hover {
+  background-color: #059669;
+}
+
+.action-btn.reject {
+  background-color: #ef4444;
+  color: white;
+}
+
+.action-btn.reject:hover {
+  background-color: #dc2626;
+}
+
+.action-btn.view {
+  background-color: #3b82f6;
+  color: white;
+}
+
+.action-btn.view:hover {
+  background-color: #2563eb;
+}
+
+/* Dialog styles */
+.cve-dialog {
+  min-width: 600px;
+  max-width: 800px;
+}
+
+.dialog-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 20px 24px;
+  border-bottom: 1px solid #e5e7eb;
+  background-color: #f8fafc;
+}
+
+.dialog-content {
+  padding: 24px;
+  max-height: 70vh;
+  overflow-y: auto;
+}
+
+.detail-section {
+  margin-bottom: 24px;
+}
+
+.detail-section:last-child {
+  margin-bottom: 0;
+}
+
+.detail-label {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #6b7280;
+  margin-bottom: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.detail-value {
+  font-size: 0.95rem;
+  line-height: 1.5;
+  color: #1f2937;
+}
+
+.products-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: 12px;
+}
+
+/* Loading states */
+.loading-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 400px;
+  gap: 16px;
+}
+
+.loading-spinner {
+  width: 40px;
+  height: 40px;
+  border: 3px solid #e5e7eb;
+  border-top-color: #3b82f6;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Empty state */
+.empty-state {
+  text-align: center;
+  padding: 48px 24px;
+  color: #6b7280;
+}
+
+.empty-icon {
+  font-size: 48px;
+  color: #d1d5db;
+  margin-bottom: 16px;
+}
+
+/* Pagination */
+.pagination {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 24px;
+  background-color: #f8fafc;
+  border-top: 1px solid #e5e7eb;
+}
+
+.pagination-info {
+  font-size: 0.875rem;
+  color: #6b7280;
+}
+
+.pagination-controls {
+  display: flex;
+  gap: 8px;
+}
+
+.pagination-btn {
+  padding: 6px 12px;
+  border: 1px solid #d1d5db;
+  background: white;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.875rem;
+}
+
+.pagination-btn:hover:not(:disabled) {
+  background-color: #f3f4f6;
+}
+
+.pagination-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Snackbar notifications */
+.snackbar {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  min-width: 300px;
+  padding: 16px 20px;
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  animation: slideIn 0.3s ease;
+  z-index: 1000;
+}
+
+.snackbar.success {
+  background-color: #10b981;
+  color: white;
+}
+
+.snackbar.error {
+  background-color: #ef4444;
+  color: white;
+}
+
+.snackbar.warning {
+  background-color: #f59e0b;
+  color: white;
+}
+
+.snackbar.info {
+  background-color: #3b82f6;
+  color: white;
+}
+
+@keyframes slideIn {
+  from {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+/* Responsive design */
+@media (max-width: 768px) {
+  .ctba-container {
+    padding: 12px;
+  }
+  
+  .dashboard-stats {
+    grid-template-columns: 1fr;
+  }
+  
+  .filter-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  
+  .filter-group {
+    min-width: 100%;
+  }
+  
+  .cve-table {
+    display: block;
+    overflow-x: auto;
+  }
+  
+  .action-buttons {
+    flex-direction: column;
+  }
+  
+  .cve-dialog {
+    min-width: 90vw;
+    margin: 12px;
+  }
+}
+
+/* Dark mode support */
+@media (prefers-color-scheme: dark) {
+  .ctba-container {
+    background-color: #111827;
+  }
+  
+  .stat-card,
+  .filters-container,
+  .cve-table-container {
+    background-color: #1f2937;
+    color: #f9fafb;
+  }
+  
+  .cve-table thead {
+    background-color: #374151;
+  }
+  
+  .cve-table th {
+    color: #f3f4f6;
+  }
+  
+  .cve-table tbody tr:hover {
+    background-color: #374151;
+  }
+  
+  .product-chip {
+    background-color: #374151;
+    color: #f3f4f6;
+  }
+  
+  .cve-description {
+    color: #d1d5db;
+  }
+}
